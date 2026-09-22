@@ -260,12 +260,21 @@ jobs:
             # Fall back to tag annotation if available
             git tag -l --format='%(contents:body)' "${VERSION}" > /tmp/release_notes.md
           fi
+          # A lightweight tag (plain `git tag v1.2.3`) has no annotation, so the
+          # notes are empty; then GitHub generates them from the merged pull
+          # requests instead of publishing a blank release.
+          if [ -s /tmp/release_notes.md ] && grep -q '[^[:space:]]' /tmp/release_notes.md; then
+            echo "generate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "generate=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version || github.ref_name }}
           body_path: /tmp/release_notes.md
+          generate_release_notes: ${{ steps.release_notes.outputs.generate == 'true' }}
           files: |
             dist/clerk-protect-*
             dist/checksums.txt
