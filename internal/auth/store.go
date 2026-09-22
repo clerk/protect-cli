@@ -49,10 +49,9 @@ var ErrNotLoggedIn = LoginRequired("not signed in")
 // file name, because it arrives from the server and from --instance, and
 // "../.." is neither.
 //
-// Underscores included: the server issues tokens for ids that carry them (the
-// staging smoke instance is ins_test_1), and a narrower shape here would let a
-// sign-in complete and then refuse to store it. An underscore is as safe in a
-// file name as a letter.
+// Underscores included: the server issues tokens for ids that carry them, and a
+// narrower shape here would let a sign-in complete and then refuse to store it.
+// An underscore is as safe in a file name as a letter.
 var instanceRe = regexp.MustCompile(`^ins_[A-Za-z0-9_]{1,64}$`)
 
 // ValidInstanceID reports whether s is shaped like an instance id.

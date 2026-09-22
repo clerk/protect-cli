@@ -21,7 +21,7 @@ func TestSave_roundTripsAndIsPrivate(t *testing.T) {
 	dir := t.TempDir()
 	want := &Set{Default: "prod", Profiles: map[string]Profile{
 		"prod":    {InstanceID: "ins_2abc"},
-		"staging": {InstanceID: "ins_test_1", APIURL: "http://127.0.0.1:4000"},
+		"staging": {InstanceID: "ins_example_2", APIURL: "http://127.0.0.1:4000"},
 	}}
 	if err := want.Save(dir); err != nil {
 		t.Fatal(err)
