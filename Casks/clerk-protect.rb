@@ -3,25 +3,20 @@
 # Change the shape here; never hand-edit the values. Until the first release,
 # the placeholders are not installable.
 cask "clerk-protect" do
+  arch arm: "arm64", intel: "amd64"
+
   version "0.0.0"
+  sha256 arm:   "0000000000000000000000000000000000000000000000000000000000000001",
+         intel: "0000000000000000000000000000000000000000000000000000000000000002"
 
-  on_intel do
-    sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-    url "https://github.com/clerk/protect-cli/releases/download/v#{version}/clerk-protect-v#{version}-darwin-amd64.pkg"
-    pkg "clerk-protect-v#{version}-darwin-amd64.pkg"
-  end
-
-  on_arm do
-    sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-    url "https://github.com/clerk/protect-cli/releases/download/v#{version}/clerk-protect-v#{version}-darwin-arm64.pkg"
-    pkg "clerk-protect-v#{version}-darwin-arm64.pkg"
-  end
-
+  url "https://github.com/clerk/protect-cli/releases/download/v#{version}/clerk-protect-v#{version}-darwin-#{arch}.pkg"
   name "Clerk Protect CLI"
-  desc "Manage Clerk Protect for your instance from the command line"
+  desc "Manage Clerk Protect for your instance from the command-line"
   homepage "https://github.com/clerk/protect-cli"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
+
+  pkg "clerk-protect-v#{version}-darwin-#{arch}.pkg"
 
   uninstall pkgutil: "com.clerk.protect-cli"
 

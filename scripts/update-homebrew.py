@@ -61,20 +61,21 @@ def main() -> None:
             die(f"{name} is not in {sums_file} — that platform is missing from the release")
         return sums[name]
 
-    # --- The cask: signed macOS packages. Its urls interpolate the version, so
-    # only the version and the two checksums change.
+    # --- The cask: signed macOS packages. Its url interpolates the version and
+    # the architecture, so only the version and the two checksums change — the
+    # `sha256 arm: "…", intel: "…"` pair, keyed by Homebrew's architecture names.
     if not CASK.is_file():
         die(f"no {CASK}")
     cask = CASK.read_text()
     before = cask
     cask = replace_once(cask, r'^  version "[^"]*"$', f'  version "{number}"', "the cask version", re.M)
-    for block, arch in (("on_intel", "amd64"), ("on_arm", "arm64")):
+    for key, arch in (("arm", "arm64"), ("intel", "amd64")):
         sha = checksum(f"clerk-protect-{tag}-darwin-{arch}.pkg")
         cask = replace_once(
             cask,
-            r"(  " + block + r' do\n    sha256 ")' + SHA + r'(")',
+            r"(\b" + key + r':\s+")' + SHA + r'(")',
             lambda m: m.group(1) + sha + m.group(2),
-            f"the cask's {block} checksum",
+            f"the cask's {key} checksum",
         )
     if cask == before:
         die("the cask did not change — it does not have the shape this script edits")

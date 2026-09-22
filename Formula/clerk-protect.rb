@@ -8,7 +8,7 @@
 # shape here; never hand-edit the values. Until the first release, the
 # placeholders are not installable.
 class ClerkProtect < Formula
-  desc "Manage Clerk Protect for your instance from the command line"
+  desc "Manage Clerk Protect for your instance from the command-line"
   homepage "https://github.com/clerk/protect-cli"
   version "0.0.0"
   license "MIT"
@@ -18,10 +18,10 @@ class ClerkProtect < Formula
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/clerk/protect-cli/releases/download/v0.0.0/clerk-protect-v0.0.0-linux-arm64.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000001"
     else
       url "https://github.com/clerk/protect-cli/releases/download/v0.0.0/clerk-protect-v0.0.0-linux-amd64.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000002"
     end
   end
 
