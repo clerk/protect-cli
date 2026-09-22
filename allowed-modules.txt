@@ -1,0 +1,25 @@
+# Every module the released clerk-protect binary may link, one module path per
+# line. `make guard` and
+# TestReleaseBinaries_containNoForbiddenTermsAndLinkOnlyReviewedModules compare
+# `go version -m` on the built binary against this file and fail on anything
+# else.
+#
+# WHY A LIST OF WHAT SHIPS, NOT OF WHAT IS IMPORTED. This binary is published.
+# Its dependency closure is what a customer runs and what a reader of the
+# binary can see, and a transitive dependency arrives without anyone writing an
+# import for it. Adding a line here is a review decision about a public
+# artifact: say in the pull request what the module is and why it is needed.
+#
+# Versions are not pinned here — go.sum pins them. This file answers "may this
+# module ship at all".
+
+# Command-line parsing.
+github.com/spf13/cobra
+github.com/spf13/pflag
+# cobra's Windows-only "started from Explorer" detection.
+github.com/inconshreveable/mousetrap
+#
+# NOT golang.org/x/sys. The Windows key store uses the standard library's
+# syscall package instead (see internal/keystore/platform_windows.go): x/sys
+# links its whole table of Win32 export names, and one of them contains a word
+# the byte scan forbids. Re-adding it fails the Windows release check.
