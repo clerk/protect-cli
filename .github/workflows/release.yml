@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write  # the Homebrew update arrives as a pull request
 
 jobs:
   build:
@@ -288,17 +289,28 @@ jobs:
       # the version AND every checksum, and fails rather than writing a partial
       # update: a cask whose version moved and whose checksum did not fails
       # every install.
-      - name: Update the Homebrew cask and formula
+      # main takes changes only through a pull request (an organization rule
+      # for public repositories), so the update arrives as one — merge it and
+      # `brew upgrade` finds the release. The v0.3.0 release pushed to main
+      # directly, was refused, and needed the same update opened by hand.
+      - name: Open a pull request pointing Homebrew at this release
         env:
           VERSION: ${{ inputs.version || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout main
 
+          branch="release/homebrew-${VERSION}"
+          git checkout -b "$branch"
           python3 scripts/update-homebrew.py --version "$VERSION" --dist dist
 
           git add Casks/clerk-protect.rb Formula/clerk-protect.rb
-          git commit -m "release: update to ${VERSION}"
-          git push origin main
+          git commit -m "release: update Homebrew to ${VERSION}"
+          git push origin "$branch"
+
+          gh pr create --base main --head "$branch" \
+            --title "release: update Homebrew to ${VERSION}" \
+            --body "Points the Homebrew cask and formula at ${VERSION}: the version, and every checksum from the release's published \`checksums.txt\`, written by \`scripts/update-homebrew.py\`. Merge it and \`brew upgrade\` finds the release."

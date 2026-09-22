@@ -53,7 +53,8 @@ git tag v1.2.3 && git push origin v1.2.3
 
 `.github/workflows/release.yml` then builds Linux and Windows on Linux, and builds, signs and
 notarizes both macOS packages on a Mac — the Secure Enclave support has to be compiled there. It
-publishes the release with `checksums.txt` and points the Homebrew cask and formula at it. macOS
+publishes the release with `checksums.txt` and opens a pull request pointing the Homebrew cask and
+formula at it — merge that, and `brew upgrade` finds the release. macOS
 ships only as the signed package, so the release waits for both packages rather than publishing
 without them.
 
