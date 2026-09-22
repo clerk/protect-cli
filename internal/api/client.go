@@ -1,278 +1,225 @@
+// Package api is the HTTP client for the Protect API: every request signed for
+// the URL it is sent to, every refusal surfaced in the server's own words.
 package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math"
-	"math/rand"
 	"net/http"
 	"net/url"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	"clerk.com/cli/internal/config"
-	"clerk.com/cli/internal/output"
+	"github.com/clerk/protect-cli/internal/auth"
+	"github.com/clerk/protect-cli/internal/dpop"
+	"github.com/clerk/protect-cli/internal/httpclient"
+	"github.com/clerk/protect-cli/internal/httperr"
 )
 
-// Version is set at build time via ldflags.
-var Version = "dev"
+// Prefix is where every customer API route lives.
+const Prefix = "/labs/api"
 
-const (
-	MaxRetries  = 3
-	BaseDelayMs = 1000
-	MaxDelayMs  = 30000
-)
+// maxBody bounds a buffered response. Exports stream instead.
+const maxBody = 64 << 20
 
+// TokenSource supplies the access token for the next request.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+}
+
+// Client makes signed requests.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
-	debug      bool
+	// Base is the API origin, with no trailing slash and no path.
+	Base   string
+	Tokens TokenSource
+	Proofs *dpop.Builder
+	// HTTP serves ordinary requests; nil means a client with a one-minute
+	// timeout. Streams serves long-lived ones; nil means no timeout, bounded by
+	// the context.
+	HTTP      *http.Client
+	Streams   *http.Client
+	UserAgent string
 }
 
-type ClientOptions struct {
-	Profile string
-	APIKey  string
-	APIURL  string
-	Debug   bool
+// Path joins escaped segments under the API prefix:
+// Path("rulesets", "SIGN_IN", "rules") is /labs/api/rulesets/SIGN_IN/rules.
+// Every segment is escaped, so an id containing a slash stays one segment.
+func Path(segments ...string) string {
+	var b strings.Builder
+	b.WriteString(Prefix)
+	for _, s := range segments {
+		b.WriteByte('/')
+		b.WriteString(url.PathEscape(s))
+	}
+	return b.String()
 }
 
-func NewClient(opts ClientOptions) *Client {
-	profileName := config.GetActiveProfileName(opts.Profile)
-
-	apiKey := opts.APIKey
-	if apiKey == "" {
-		apiKey = config.GetAPIKey(profileName)
-	}
-
-	apiURL := opts.APIURL
-	if apiURL == "" {
-		apiURL = config.GetAPIURL(profileName)
-	}
-
-	debug := opts.Debug || config.IsDebugEnabled()
-
-	return &Client{
-		baseURL:    strings.TrimSuffix(apiURL, "/"),
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		debug:      debug,
-	}
+// Response is a successful, buffered response.
+type Response struct {
+	Status int
+	Header http.Header
+	Body   []byte
 }
 
-type RequestOptions struct {
-	Body    interface{}
-	Query   map[string]string
-	IfMatch string
-}
-
-type ResponseMeta struct {
-	ETag string
-}
-
-func (c *Client) Request(method, path string, opts *RequestOptions) ([]byte, error) {
-	data, _, err := c.RequestWithMeta(method, path, opts)
-	return data, err
-}
-
-func (c *Client) RequestWithMeta(method, path string, opts *RequestOptions) ([]byte, *ResponseMeta, error) {
-	if opts == nil {
-		opts = &RequestOptions{}
+func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte, accept string) (*http.Request, error) {
+	if !strings.HasPrefix(path, "/") {
+		return nil, fmt.Errorf("api: path %q must be absolute", path)
 	}
-
-	fullURL := c.baseURL + path
-
-	if len(opts.Query) > 0 {
-		params := url.Values{}
-		for k, v := range opts.Query {
-			if v != "" {
-				params.Set(k, v)
-			}
-		}
-		if encoded := params.Encode(); encoded != "" {
-			fullURL += "?" + encoded
-		}
+	u, err := url.Parse(c.Base + path)
+	if err != nil {
+		return nil, fmt.Errorf("api: %w", err)
 	}
-
-	var bodyReader io.Reader
-	if opts.Body != nil {
-		bodyBytes, err := json.Marshal(opts.Body)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		bodyReader = bytes.NewReader(bodyBytes)
+	if len(query) > 0 {
+		u.RawQuery = query.Encode()
 	}
-
-	var lastErr error
-	for attempt := 0; attempt <= MaxRetries; attempt++ {
-		if attempt > 0 {
-			delay := c.calculateDelay(attempt, nil)
-			time.Sleep(delay)
-		}
-
-		req, err := http.NewRequest(method, fullURL, bodyReader)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	token, err := c.Tokens.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// htu is the origin plus the ESCAPED path, with no query: exactly what the
+	// server rebuilds from its own configured origin and the path it received.
+	// Signing u.Path instead would break on the first id containing a character
+	// that needs escaping.
+	proof, err := c.Proofs.Proof(method, c.Base+u.EscapedPath(), token)
+	if err != nil {
+		return nil, err
+	}
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "DPoP "+token)
+	req.Header.Set("DPoP", proof)
+	req.Header.Set("Accept", accept)
+	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", "clerk-cli/"+Version)
-
-		if opts.IfMatch != "" {
-			req.Header.Set("If-Match", opts.IfMatch)
-		}
-
-		if c.debug {
-			fmt.Fprintf(os.Stderr, "[DEBUG] --> %s %s\n", method, fullURL)
-		}
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			lastErr = err
-			if c.debug {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Request failed: %v\n", err)
-			}
-			continue
-		}
-
-		respBody, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close() // body already read
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		if c.debug {
-			fmt.Fprintf(os.Stderr, "[DEBUG] <-- %s %s (%d)\n", method, fullURL, resp.StatusCode)
-			if len(respBody) > 0 && len(respBody) < 2000 {
-				fmt.Fprintf(os.Stderr, "[DEBUG]     Body: %s\n", string(respBody))
-			}
-		}
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			meta := &ResponseMeta{
-				ETag: resp.Header.Get("ETag"),
-			}
-			return respBody, meta, nil
-		}
-
-		if c.shouldRetry(resp.StatusCode) && attempt < MaxRetries {
-			lastErr = c.parseAPIError(resp.StatusCode, respBody)
-			continue
-		}
-
-		return nil, nil, c.parseAPIError(resp.StatusCode, respBody)
 	}
-
-	return nil, nil, fmt.Errorf("request failed after %d retries: %w", MaxRetries, lastErr)
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
+	return req, nil
 }
 
-func (c *Client) shouldRetry(statusCode int) bool {
-	switch statusCode {
-	case 429, 408, 502, 503, 504:
-		return true
+func encode(in any) ([]byte, error) {
+	switch v := in.(type) {
+	case nil:
+		return nil, nil
+	case json.RawMessage:
+		return v, nil
+	case []byte:
+		return v, nil
 	default:
-		return statusCode >= 500
+		return json.Marshal(v)
 	}
 }
 
-func (c *Client) calculateDelay(attempt int, resp *http.Response) time.Duration {
-	if resp != nil {
-		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-			if seconds, err := strconv.Atoi(retryAfter); err == nil {
-				return time.Duration(seconds) * time.Second
-			}
-		}
+// refusal turns a non-2xx response into an error. A 401 is a sign-in: the
+// credential was not accepted, and nothing this command can do will change that.
+func refusal(status int, body []byte) error {
+	he := httperr.Parse(status, body)
+	if status == http.StatusUnauthorized {
+		return auth.LoginRequiredBy("the server did not accept this computer's credential", he)
 	}
+	return he
+}
 
-	delay := float64(BaseDelayMs) * math.Pow(2, float64(attempt-1))
-	jitter := rand.Float64() * 0.3 * delay // #nosec G404 -- math/rand is fine for jitter, not crypto
-	delay += jitter
+// httpClient and streamClient never follow a redirect: every request carries a
+// token and a proof, and a redirect would send both on (see httpclient).
+func (c *Client) httpClient() *http.Client {
+	return httpclient.NoRedirects(c.HTTP, time.Minute)
+}
 
-	if delay > MaxDelayMs {
-		delay = MaxDelayMs
+// Do sends a request and buffers the response.
+func (c *Client) Do(ctx context.Context, method, path string, query url.Values, in any) (*Response, error) {
+	body, err := encode(in)
+	if err != nil {
+		return nil, err
 	}
-
-	return time.Duration(delay) * time.Millisecond
-}
-
-func (c *Client) parseAPIError(statusCode int, body []byte) error {
-	var apiResp struct {
-		Errors []struct {
-			Code        string `json:"code"`
-			Message     string `json:"message"`
-			LongMessage string `json:"long_message"`
-		} `json:"errors"`
+	req, err := c.request(ctx, method, path, query, body, "application/json")
+	if err != nil {
+		return nil, err
 	}
-
-	if err := json.Unmarshal(body, &apiResp); err == nil && len(apiResp.Errors) > 0 {
-		e := apiResp.Errors[0]
-		return output.NewAPIError(statusCode, e.Code, e.Message, e.LongMessage)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, err
 	}
-
-	return output.NewAPIError(statusCode, "", fmt.Sprintf("HTTP %d error", statusCode), string(body))
-}
-
-func (c *Client) Get(path string, query map[string]string) ([]byte, error) {
-	return c.Request("GET", path, &RequestOptions{Query: query})
-}
-
-func (c *Client) Post(path string, body interface{}) ([]byte, error) {
-	return c.Request("POST", path, &RequestOptions{Body: body})
-}
-
-func (c *Client) Patch(path string, body interface{}) ([]byte, error) {
-	return c.Request("PATCH", path, &RequestOptions{Body: body})
-}
-
-func (c *Client) Put(path string, body interface{}) ([]byte, error) {
-	return c.Request("PUT", path, &RequestOptions{Body: body})
-}
-
-func (c *Client) Delete(path string) ([]byte, error) {
-	return c.Request("DELETE", path, nil)
-}
-
-func ParseResponse[T any](data []byte) (T, error) {
-	var result T
-	if err := json.Unmarshal(data, &result); err != nil {
-		return result, fmt.Errorf("failed to parse response: %w", err)
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return nil, err
 	}
-	return result, nil
+	if resp.StatusCode/100 != 2 {
+		return nil, refusal(resp.StatusCode, data)
+	}
+	return &Response{Status: resp.StatusCode, Header: resp.Header, Body: data}, nil
 }
 
-type ListResponse[T any] struct {
-	Data       []T `json:"data"`
-	TotalCount int `json:"total_count"`
+// JSON sends a request and decodes a JSON response into out (which may be nil).
+func (c *Client) JSON(ctx context.Context, method, path string, query url.Values, in, out any) error {
+	resp, err := c.Do(ctx, method, path, query, in)
+	if err != nil {
+		return err
+	}
+	if out == nil || len(bytes.TrimSpace(resp.Body)) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(resp.Body, out); err != nil {
+		return fmt.Errorf("the server returned an unreadable response: %w", err)
+	}
+	return nil
 }
 
-func ParseListResponse[T any](data []byte) (*ListResponse[T], error) {
-	var result ListResponse[T]
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+// Download streams a response body to w without buffering it.
+func (c *Client) Download(ctx context.Context, path string, query url.Values, w io.Writer) error {
+	req, err := c.request(ctx, http.MethodGet, path, query, nil, "*/*")
+	if err != nil {
+		return err
 	}
-	return &result, nil
+	resp, err := c.streamClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return refusal(resp.StatusCode, data)
+	}
+	_, err = io.Copy(w, resp.Body)
+	return err
 }
 
-// ParseArrayResponse parses a JSON response that could be either a raw array
-// or a wrapped {data: [], total_count: N} object, returning just the items.
-func ParseArrayResponse[T any](data []byte) ([]T, error) {
-	// Try plain array first
-	var arr []T
-	if err := json.Unmarshal(data, &arr); err == nil {
-		return arr, nil
-	}
+func (c *Client) streamClient() *http.Client {
+	return httpclient.NoRedirects(c.Streams, 0)
+}
 
-	// Fall back to wrapped format
-	var wrapped ListResponse[T]
-	if err := json.Unmarshal(data, &wrapped); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+// Stream opens a Server-Sent Events stream and calls fn for each event until the
+// stream ends, the context is cancelled, or fn returns an error. ErrStop from fn
+// ends the stream without an error.
+func (c *Client) Stream(ctx context.Context, path string, query url.Values, fn func(Event) error) error {
+	req, err := c.request(ctx, http.MethodGet, path, query, nil, "text/event-stream")
+	if err != nil {
+		return err
 	}
-	return wrapped.Data, nil
+	resp, err := c.streamClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return refusal(resp.StatusCode, data)
+	}
+	err = ReadEvents(resp.Body, fn)
+	if errors.Is(err, ErrStop) {
+		return nil
+	}
+	return err
 }

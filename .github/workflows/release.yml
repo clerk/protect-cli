@@ -1,5 +1,12 @@
 name: Release
 
+# Tag a commit on main as v1.2.3 and push the tag. This builds every platform,
+# checks each binary, signs and notarizes the macOS packages, publishes the
+# release with checksums, and points the Homebrew cask and formula at it.
+#
+# To test the build and signing without releasing anything, run this workflow
+# by hand on main with skip_release left on.
+
 on:
   push:
     tags: ["v*"]
@@ -19,6 +26,7 @@ permissions:
 
 jobs:
   build:
+    name: Linux and Windows binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,59 +37,111 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build release binaries
+      # The list of strings that must never appear in a released binary is not
+      # in this repository. Where the secret exists the build is scanned
+      # against it; where it does not, `make binary` says on its own result
+      # line that the term scan did not run, rather than printing a clean scan.
+      - name: Take the forbidden-term list, if this repository has one
+        env:
+          FORBIDDEN_TERMS: ${{ secrets.FORBIDDEN_TERMS }}
         run: |
-          set -e
-          VERSION="${{ inputs.version || github.ref_name }}"
-          LDFLAGS="-s -w -X clerk.com/cli/internal/cmd.Version=${VERSION}"
-          PKG="./cmd/clerk"
-          DIST="dist"
-          mkdir -p "$DIST"
+          if [ -n "$FORBIDDEN_TERMS" ]; then
+            printf '%s\n' "$FORBIDDEN_TERMS" > forbidden-terms.txt
+            echo "scanning against $(grep -cve '^#' -e '^$' forbidden-terms.txt) terms"
+          else
+            echo "no FORBIDDEN_TERMS secret: the term scan will not run"
+          fi
 
-          platforms=(
-            "darwin/amd64"
-            "darwin/arm64"
-            "linux/amd64"
-            "linux/arm64"
-            "windows/amd64"
-            "windows/arm64"
-          )
+      # `make binary` builds the release way (-trimpath, no VCS stamp, no debug
+      # information) and runs the release guard on what it built.
+      - name: Build release binaries
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
 
-          for platform in "${platforms[@]}"; do
-            GOOS="${platform%/*}"
-            GOARCH="${platform#*/}"
-            output="clerk-${VERSION}-${GOOS}-${GOARCH}"
-            if [ "$GOOS" = "windows" ]; then
-              output="${output}.exe"
-            fi
-
-            echo "Building ${GOOS}/${GOARCH}..."
-            GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 \
-              go build -ldflags "$LDFLAGS" -o "${DIST}/${output}" "$PKG"
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
+              make binary BIN=dist/clerk-protect VERSION="$VERSION"
+            tar -czf "dist/clerk-protect-${VERSION}-linux-${arch}.tar.gz" -C dist clerk-protect -C .. README.md LICENSE
+            rm dist/clerk-protect
           done
+
+          for arch in amd64 arm64; do
+            GOOS=windows GOARCH="$arch" CGO_ENABLED=0 \
+              make binary BIN=dist/clerk-protect.exe VERSION="$VERSION"
+            (cd dist && zip -q "clerk-protect-${VERSION}-windows-${arch}.zip" clerk-protect.exe ../README.md ../LICENSE)
+            rm dist/clerk-protect.exe
+          done
+
+      - name: Forget the list
+        if: always()
+        run: rm -f forbidden-terms.txt
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries
-          path: dist/
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
           retention-days: 1
 
+  # macOS is built here, not in the Linux job: the Secure Enclave support is a
+  # Swift shim, which has to be compiled on a Mac for the architecture the Go
+  # build links. One runner builds both architectures; macOS 13 is the floor,
+  # below which the link wants Swift's back-deployment library.
   sign-macos:
-    needs: build
+    name: macOS package (${{ matrix.arch }})
     runs-on: macos-latest
     environment: release
     strategy:
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: arm64
+            swift_target: arm64-apple-macos13
+            cc: clang -arch arm64
+          - arch: amd64
+            swift_target: x86_64-apple-macos13
+            cc: clang -arch x86_64
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          name: binaries
-          path: dist/
+          go-version-file: go.mod
+
+      - name: Take the forbidden-term list, if this repository has one
+        env:
+          FORBIDDEN_TERMS: ${{ secrets.FORBIDDEN_TERMS }}
+        run: |
+          if [ -n "$FORBIDDEN_TERMS" ]; then
+            printf '%s\n' "$FORBIDDEN_TERMS" > forbidden-terms.txt
+            echo "scanning against $(grep -cve '^#' -e '^$' forbidden-terms.txt) terms"
+          else
+            echo "no FORBIDDEN_TERMS secret: the term scan will not run"
+          fi
+
+      # CGO_ENABLED=1 explicitly: Go turns cgo off by default when GOARCH is not
+      # the runner's own, and the Secure Enclave shim is linked through cgo.
+      - name: Build the binary
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "1"
+          CC: ${{ matrix.cc }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          make binary BIN="dist/clerk-protect-${VERSION}-darwin-${GOARCH}" VERSION="$VERSION" \
+            SWIFT_TARGET="${{ matrix.swift_target }}"
+
+      - name: Forget the list
+        if: always()
+        run: rm -f forbidden-terms.txt
 
       - name: Import certificates
         env:
@@ -137,17 +197,24 @@ jobs:
           chmod +x scripts/build-macos-pkg.sh
           ./scripts/build-macos-pkg.sh ${{ matrix.arch }}
 
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+
       - name: Upload signed .pkg
         uses: actions/upload-artifact@v4
         with:
           name: pkg-darwin-${{ matrix.arch }}
           path: dist/*.pkg
+          if-no-files-found: error
           retention-days: 1
 
+  # macOS now ships ONLY as the signed package — there is no unsigned macOS
+  # binary to fall back on — so a release waits for both packages. Publishing
+  # without them would point the cask at files that do not exist.
   release:
     needs: [build, sign-macos]
-    # Run even if sign-macos is skipped, but skip if testing via workflow_dispatch with skip_release
-    if: ${{ always() && needs.build.result == 'success' && inputs.skip_release != true }}
+    if: ${{ inputs.skip_release != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -162,14 +229,12 @@ jobs:
 
       - name: Download signed macOS packages (amd64)
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: pkg-darwin-amd64
           path: dist/
 
       - name: Download signed macOS packages (arm64)
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: pkg-darwin-arm64
           path: dist/
@@ -177,7 +242,8 @@ jobs:
       - name: Create checksums
         run: |
           cd dist
-          sha256sum clerk-* > checksums.txt
+          sha256sum clerk-protect-* > checksums.txt
+          cat checksums.txt
 
       - name: Get release notes
         id: release_notes
@@ -201,29 +267,24 @@ jobs:
           tag_name: ${{ inputs.version || github.ref_name }}
           body_path: /tmp/release_notes.md
           files: |
-            dist/clerk-*
+            dist/clerk-protect-*
             dist/checksums.txt
 
-      - name: Update Homebrew formula, cask, and npm package version
+      # The cask and formula are what `brew upgrade` reads. The script rewrites
+      # the version AND every checksum, and fails rather than writing a partial
+      # update: a cask whose version moved and whose checksum did not fails
+      # every install.
+      - name: Update the Homebrew cask and formula
         env:
           VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          VERSION_NUM="${VERSION#v}"
-          TAG_SHA="$(git rev-parse "${VERSION}")"
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout main
 
-          # Update Formula (builds from source)
-          sed -i "s/tag: \"v[^\"]*\"/tag: \"${VERSION}\"/" Formula/clerk.rb
-          sed -i "s/revision: \"[^\"]*\"/revision: \"${TAG_SHA}\"/" Formula/clerk.rb
+          python3 scripts/update-homebrew.py --version "$VERSION" --dist dist
 
-          # Update Cask (uses signed .pkg)
-          sed -i "s/version \"[^\"]*\"/version \"${VERSION_NUM}\"/" Casks/clerk.rb
-
-          # Update npm package version
-          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION_NUM}\"/" package.json
-
-          git add Formula/clerk.rb Casks/clerk.rb package.json
+          git add Casks/clerk-protect.rb Formula/clerk-protect.rb
           git commit -m "release: update to ${VERSION}"
           git push origin main

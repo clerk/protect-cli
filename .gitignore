@@ -1,4 +1,12 @@
-/clerk
-node_modules/
-bin/clerk-bin
-bin/clerk-bin.exe
+# `make` builds the binary in place, and on macOS compiles the Secure Enclave
+# shim into a static library beside the keystore. Neither belongs in the tree.
+/clerk-protect
+/clerk-protect.exe
+internal/keystore/libclerkprotectenclave.a
+
+# Release archives, checksums and anything else a release run leaves behind.
+/dist/
+
+# The forbidden-term list is private. A release workflow may write it here from
+# a secret; it must never be committed.
+/forbidden-terms.txt

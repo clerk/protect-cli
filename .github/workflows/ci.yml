@@ -21,10 +21,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # v2.11.4: an older golangci-lint is built with an older Go than go.mod
+      # names, and refuses to analyse the module at all.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.4.0
+          version: v2.11.4
           args: --timeout=5m
 
   security:
@@ -37,10 +39,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Three rules are excluded because this tool does each of those things on
+      # purpose, and every finding under them was read before excluding it:
+      #   G204  it launches the browser with the approval URL, and the release
+      #         guard runs `go version -m` on the binary it is checking
+      #   G304  it reads files from its own configuration directory (sign-ins,
+      #         profiles, the device key's handle), and the guard reads the
+      #         binary it is given
+      #   G117  it writes the access token to the credential file — that file is
+      #         the credential store, created 0600
       - name: Run Gosec Security Scanner
         uses: securego/gosec@master
         with:
-          args: -exclude-generated -severity medium -confidence medium ./...
+          args: -exclude-generated -severity medium -confidence medium -exclude=G117,G204,G304 ./...
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
@@ -52,6 +63,7 @@ jobs:
     name: Build & Test
     needs: [lint]  # Only run if lint passes
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -61,6 +73,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      # On macOS the device key lives in the Secure Enclave, through a Swift shim
+      # that cgo cannot compile. `make enclave` builds it as a static library;
+      # without it every macOS link fails on an undefined symbol.
+      - name: Build the Secure Enclave shim
+        if: runner.os == 'macOS'
+        run: make enclave
 
       - name: Build
         run: go build -v ./...
@@ -73,6 +92,13 @@ jobs:
           else
             go test -v -race ./...
           fi
+
+      # The release way: -trimpath, no VCS stamp, no debug information, and the
+      # release guard on the result. The guard reports that its forbidden-term
+      # scan did not run: that list is not in this repository (CONTRIBUTING.md).
+      - name: Build and check the release artifact
+        if: runner.os != 'Windows'
+        run: make binary
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
