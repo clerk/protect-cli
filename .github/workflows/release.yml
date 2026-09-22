@@ -256,9 +256,14 @@ jobs:
           if [ -n "$EXISTING_NOTES" ]; then
             echo "Release already has notes, preserving them"
             echo "$EXISTING_NOTES" > /tmp/release_notes.md
-          else
-            # Fall back to tag annotation if available
+          elif [ "$(git cat-file -t "refs/tags/${VERSION}" 2>/dev/null)" = "tag" ]; then
+            # An annotated tag: its annotation is the release notes.
             git tag -l --format='%(contents:body)' "${VERSION}" > /tmp/release_notes.md
+          else
+            # A lightweight tag has no annotation, and %(contents:body) would
+            # hand back the tagged COMMIT's body instead — so no notes here, and
+            # GitHub generates them below.
+            : > /tmp/release_notes.md
           fi
           # A lightweight tag (plain `git tag v1.2.3`) has no annotation, so the
           # notes are empty; then GitHub generates them from the merged pull
