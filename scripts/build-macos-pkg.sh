@@ -107,17 +107,19 @@ echo "==> Verifying binary signature"
 codesign --verify --deep --strict --verbose=2 \
     "${WORK_DIR}/payload${INSTALL_LOCATION}/${BINARY_NAME}"
 
-# A signature that breaks the binary is a release nobody can run. The runner's
-# own architecture can execute its own build (and the Intel one under Rosetta,
-# when it is installed); where it cannot, the signature check above stands.
+# A signature that breaks the binary is a release nobody can run, so the signed
+# binary is run. The runner executes its own architecture directly, and the
+# other one through `arch` when it can (Intel under Rosetta). Only "this machine
+# cannot execute that architecture at all" is excused — never a binary that
+# started and failed, which is the failure this check exists for.
 echo "==> Running the signed binary"
-if "${WORK_DIR}/payload${INSTALL_LOCATION}/${BINARY_NAME}" --version; then
-    :
-elif [[ "$APPLE_ARCH" != "$(uname -m)" ]]; then
-    echo "    (cannot execute ${APPLE_ARCH} on this $(uname -m) runner; signature verified above)"
+SIGNED_BINARY="${WORK_DIR}/payload${INSTALL_LOCATION}/${BINARY_NAME}"
+if [[ "$APPLE_ARCH" == "$(uname -m)" ]]; then
+    "$SIGNED_BINARY" --version || { echo "Error: the signed binary does not run"; exit 1; }
+elif arch "-${APPLE_ARCH}" /usr/bin/true 2>/dev/null; then
+    arch "-${APPLE_ARCH}" "$SIGNED_BINARY" --version || { echo "Error: the signed binary does not run"; exit 1; }
 else
-    echo "Error: the signed binary does not run"
-    exit 1
+    echo "    (this $(uname -m) runner cannot execute ${APPLE_ARCH} at all; signature verified above)"
 fi
 
 # Build unsigned pkg
