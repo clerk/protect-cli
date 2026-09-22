@@ -358,8 +358,9 @@ func (a *app) insightsValidateFilterCmd() *cobra.Command {
 					return err
 				}
 			} else if verdict.Valid {
-				a.printf("Valid.\n")
+				a.printf("%s\n", a.out.Good("Valid."))
 			} else {
+				a.printf("%s\n", a.out.Bad("Invalid:"))
 				for _, e := range verdict.Errors {
 					a.printf("  %s\n", e.Message)
 				}

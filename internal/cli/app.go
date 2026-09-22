@@ -9,8 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
-	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/clerk/protect-cli/internal/api"
 	"github.com/clerk/protect-cli/internal/auth"
@@ -18,6 +19,7 @@ import (
 	"github.com/clerk/protect-cli/internal/dpop"
 	"github.com/clerk/protect-cli/internal/keystore"
 	"github.com/clerk/protect-cli/internal/profile"
+	"github.com/clerk/protect-cli/internal/style"
 	"github.com/clerk/protect-cli/internal/term"
 	"github.com/clerk/protect-cli/internal/textsafe"
 )
@@ -167,35 +169,191 @@ func (a *app) printRaw(raw []byte) error {
 	buf.WriteByte('\n')
 	out := buf.String()
 	if !a.jsonOut {
-		out = textsafe.Strip(out)
+		out = string(a.out.JSON(textsafe.Strip(out)))
 	}
 	_, err := io.WriteString(a.stdout, out)
 	return err
 }
 
-// printf and notef write human output, and server text reaches both — rule
-// expressions, protection names, error messages — so both strip terminal
-// control sequences from what they write.
+// printf and notef write human output, to stdout and stderr. Colour comes in
+// as style.Text arguments, from the palette for that stream (a.out, a.errp).
 func (a *app) printf(format string, args ...any) {
-	_, _ = io.WriteString(a.stdout, textsafe.Strip(fmt.Sprintf(format, args...)))
+	_, _ = io.WriteString(a.stdout, safef(format, args...))
 }
 
 func (a *app) notef(format string, args ...any) {
-	_, _ = io.WriteString(a.stderr, textsafe.Strip(fmt.Sprintf(format, args...)))
+	_, _ = io.WriteString(a.stderr, safef(format, args...))
 }
 
-// table is a tabwriter that strips terminal control sequences from each write
-// before aligning it, so a column is measured by what is shown.
-type table struct{ *tabwriter.Writer }
-
-func (t table) Write(p []byte) (int, error) {
-	if _, err := t.Writer.Write([]byte(textsafe.Strip(string(p)))); err != nil {
-		return 0, err
+// safef formats a line of human output. Server text reaches it — rule
+// expressions, protection names, error messages — and so does colour, which is
+// made of the same escape sequences the server's text must not carry. So every
+// argument is made safe on its own: a style.Text is already stripped and
+// coloured by the palette, and everything else is stripped here. A number or a
+// bool is left as it is, so %d and %t still format it. Sanitize then keeps
+// colour and strips anything else, a backstop for text that reached the format
+// string itself — which can then change a colour, and nothing more.
+func safef(format string, args ...any) string {
+	safe := make([]any, len(args))
+	for i, v := range args {
+		switch x := v.(type) {
+		case style.Text:
+			safe[i] = string(x)
+		case string:
+			safe[i] = textsafe.Strip(x)
+		case error:
+			safe[i] = textsafe.Strip(x.Error())
+		case fmt.Stringer:
+			safe[i] = textsafe.Strip(x.String())
+		case nil:
+			safe[i] = x
+		default:
+			switch reflect.ValueOf(v).Kind() {
+			case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+				reflect.Float32, reflect.Float64:
+				safe[i] = v
+			default:
+				safe[i] = textsafe.Strip(fmt.Sprint(v))
+			}
+		}
 	}
-	return len(p), nil
+	return style.Sanitize(fmt.Sprintf(format, safe...))
 }
 
-func (a *app) table() table { return table{tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)} }
+// table aligns tab-separated lines into columns, as text/tabwriter did — two
+// spaces between columns, the last cell of a line unpadded — and colours them.
+// Every cell is stripped of control sequences as it is written; colour is added
+// only when the table is flushed, by the palette, around text already
+// stripped. So a column is measured by what a terminal shows, which a
+// tabwriter cannot do once colour is in the cells.
+type table struct {
+	w       io.Writer
+	p       style.Palette
+	header  []string
+	styles  map[int]func(string) style.Text
+	rows    [][]cell
+	partial []byte
+}
+
+// cell is one table cell: stripped text, or a style.Text coloured already.
+type cell struct {
+	text   string
+	styled bool
+}
+
+func (a *app) table() *table {
+	return &table{w: a.stdout, p: a.out, styles: map[int]func(string) style.Text{}}
+}
+
+// status colours a state or status by what it means: the whole value when it
+// is a word the palette knows ("not set up"), otherwise its first word
+// ("succeeded (applied)").
+func status(p style.Palette, s string) style.Text {
+	if whole := p.Word(s); !p.On() || whole != p.Plain(s) {
+		return whole
+	}
+	first, rest, found := strings.Cut(s, " ")
+	if !found {
+		return p.Word(s)
+	}
+	return style.Text(string(p.Word(first)) + string(p.Plain(" "+rest)))
+}
+
+// kvTable is a table of name–value lines, whose names are labels.
+func (a *app) kvTable() *table {
+	t := a.table()
+	t.Style(0, a.out.Label)
+	return t
+}
+
+// Header sets the column headings, shown above the rows.
+func (t *table) Header(cols ...string) { t.header = cols }
+
+// Style colours every cell of column col with f.
+func (t *table) Style(col int, f func(string) style.Text) { t.styles[col] = f }
+
+func (t *table) Write(p []byte) (int, error) {
+	t.partial = append(t.partial, p...)
+	for {
+		i := bytes.IndexByte(t.partial, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		var row []cell
+		for _, c := range strings.Split(string(t.partial[:i]), "\t") {
+			row = append(row, cell{text: textsafe.Strip(c)})
+		}
+		t.rows = append(t.rows, row)
+		t.partial = t.partial[i+1:]
+	}
+}
+
+// Row adds a row whose cells are strings, stripped here, or style.Text,
+// coloured already by the palette — for a cell whose colour depends on its row.
+func (t *table) Row(cells ...any) {
+	row := make([]cell, len(cells))
+	for i, v := range cells {
+		switch x := v.(type) {
+		case style.Text:
+			row[i] = cell{text: string(x), styled: true}
+		case string:
+			row[i] = cell{text: textsafe.Strip(x)}
+		default:
+			row[i] = cell{text: textsafe.Strip(fmt.Sprint(x))}
+		}
+	}
+	t.rows = append(t.rows, row)
+}
+
+// width is how many columns c takes on a terminal.
+func (c cell) width() int { return utf8.RuneCountInString(style.Visible(c.text)) }
+
+func (t *table) Flush() error {
+	if len(t.partial) > 0 {
+		_, _ = t.Write([]byte("\n"))
+	}
+	rows := t.rows
+	if t.header != nil {
+		head := make([]cell, len(t.header))
+		for i, h := range t.header {
+			head[i] = cell{text: string(t.p.Header(h)), styled: true}
+		}
+		rows = append([][]cell{head}, rows...)
+	}
+	// A column is as wide as its widest cell, not counting the last cell of a
+	// line, which is never padded.
+	var widths []int
+	for _, r := range rows {
+		for i := 0; i < len(r)-1; i++ {
+			for len(widths) <= i {
+				widths = append(widths, 0)
+			}
+			widths[i] = max(widths[i], r[i].width())
+		}
+	}
+	var b strings.Builder
+	for _, r := range rows {
+		for i, c := range r {
+			// Header cells are styled already, so a column style never reaches them.
+			switch f, ok := t.styles[i]; {
+			case c.styled:
+				b.WriteString(c.text)
+			case ok:
+				b.WriteString(string(f(c.text)))
+			default:
+				b.WriteString(c.text)
+			}
+			if i < len(r)-1 {
+				b.WriteString(strings.Repeat(" ", widths[i]-c.width()+2))
+			}
+		}
+		b.WriteByte('\n')
+	}
+	t.rows = nil
+	_, err := io.WriteString(t.w, b.String())
+	return err
+}
 
 func stdinIsTerminal() bool { return term.IsTerminal(os.Stdin.Fd()) }
 

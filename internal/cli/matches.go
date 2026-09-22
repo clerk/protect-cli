@@ -106,9 +106,11 @@ func (a *app) matchesCmd() *cobra.Command {
 			if err := json.Unmarshal(resp.Body, &res); err != nil {
 				return err
 			}
-			a.printf("%s → %s  ·  %d × %ds  ·  %s by %s\n\n", res.Start, res.End, res.Buckets, res.IntervalSeconds, res.Unit, res.GroupBy)
+			a.printf("%s\n\n", a.out.Muted(fmt.Sprintf("%s → %s  ·  %d × %ds  ·  %s by %s", res.Start, res.End, res.Buckets, res.IntervalSeconds, res.Unit, res.GroupBy)))
 			tw := a.table()
-			_, _ = fmt.Fprintln(tw, "KEY\tMATCHED\tACTED\tSPARKLINE")
+			tw.Header("KEY", "MATCHED", "ACTED", "SPARKLINE")
+			tw.Style(0, a.out.ID)
+			tw.Style(3, a.out.Good)
 			for _, s := range res.Series {
 				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%s\n", s.Key, s.TotalMatched, s.TotalActed, sparkline(s.Matched))
 			}

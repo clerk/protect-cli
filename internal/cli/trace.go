@@ -15,6 +15,7 @@ import (
 
 	"github.com/clerk/protect-cli/internal/api"
 	"github.com/clerk/protect-cli/internal/auth"
+	"github.com/clerk/protect-cli/internal/style"
 	"github.com/clerk/protect-cli/internal/term"
 	"github.com/clerk/protect-cli/internal/textsafe"
 	"github.com/clerk/protect-cli/internal/traceview"
@@ -308,7 +309,7 @@ func (a *app) traceLines(ctx context.Context, c *api.Client, session *auth.Sessi
 				_, _ = fmt.Fprintln(a.stdout, data)
 				return
 			}
-			a.printf("%s\n", decisionLine(event, show))
+			a.printf("%s\n", decisionLine(a.out, event, show))
 		},
 		status: func(string) {
 			if !announced {
@@ -324,7 +325,10 @@ func (a *app) traceLines(ctx context.Context, c *api.Client, session *auth.Sessi
 	return err
 }
 
-func decisionLine(event map[string]any, show []string) string {
+// decisionLine renders one decision as key=value pairs: keys dimmed, the
+// decision itself coloured by what it means. Keys are stripped and values
+// quoted when they carry a control character, before any colour is added.
+func decisionLine(p style.Palette, event map[string]any, show []string) style.Text {
 	var parts []string
 	keys := show
 	if len(keys) == 0 {
@@ -341,8 +345,12 @@ func decisionLine(event map[string]any, show []string) string {
 				}
 				return r
 			}, textsafe.Strip(k))
-			parts = append(parts, key+"="+formatValue(v))
+			value := p.Plain(formatValue(v))
+			if k == "decision" {
+				value = p.Word(formatValue(v))
+			}
+			parts = append(parts, string(p.Label(key+"="))+string(value))
 		}
 	}
-	return strings.Join(parts, " ")
+	return style.Text(strings.Join(parts, " "))
 }

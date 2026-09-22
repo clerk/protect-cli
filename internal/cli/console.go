@@ -74,7 +74,7 @@ func (a *app) consoleOpenCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				a.printf("%s\n", target)
+				a.printf("%s\n", a.out.Emphasis(target))
 			}
 			if sel.Instance != "" {
 				a.notef("The page shows the instance your browser is signed in to. This command names %s; if the "+

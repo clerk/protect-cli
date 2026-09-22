@@ -22,6 +22,7 @@ import (
 	"github.com/clerk/protect-cli/internal/config"
 	"github.com/clerk/protect-cli/internal/dpop"
 	"github.com/clerk/protect-cli/internal/keystore"
+	"github.com/clerk/protect-cli/internal/style"
 )
 
 func TestPlanReorder(t *testing.T) {
@@ -168,13 +169,13 @@ func TestCodeFor(t *testing.T) {
 // A decision field is whatever the client sent — a user agent can carry an
 // escape sequence — and a trace line must print it as text.
 func TestDecisionLine_escapesControlSequencesInFieldsAndKeys(t *testing.T) {
-	line := decisionLine(map[string]any{
+	line := string(decisionLine(style.New(true), map[string]any{
 		"ip":            "1.2.3.4",
 		"ua":            "curl\x1b]52;c;ZXZpbA==\x07",
 		"note":          "two\nlines",
 		"odd\x1b[2Jkey": "x",
-	}, nil)
-	if strings.ContainsAny(line, "\x1b\x07\n") {
+	}, nil))
+	if line = style.Visible(line); strings.ContainsAny(line, "\x1b\x07\n") {
 		t.Fatalf("the decision line carries control characters: %q", line)
 	}
 	for _, want := range []string{"ip=1.2.3.4", `ua="curl\x1b]52;c;ZXZpbA==\a"`, `note="two\nlines"`, "odd[2Jkey=x"} {

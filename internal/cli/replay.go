@@ -16,6 +16,7 @@ import (
 
 	"github.com/clerk/protect-cli/internal/api"
 	"github.com/clerk/protect-cli/internal/httperr"
+	"github.com/clerk/protect-cli/internal/style"
 )
 
 // replayAlreadyApplied is the server's message when a replay's change is
@@ -111,13 +112,13 @@ func (a *app) replayCreateCmd() *cobra.Command {
 				return err
 			}
 			if watch {
-				a.notef("Started replay %s.\n", created.ReplayID)
+				a.notef("%s %s.\n", a.errp.Good("Started replay"), a.errp.ID(created.ReplayID))
 				return a.watchReplay(cmd, created.ReplayID)
 			}
 			if a.jsonOut {
 				return a.printRaw(resp.Body)
 			}
-			a.printf("Started replay %s (%s). Follow it with `clerk-protect replay watch %s`.\n", created.ReplayID, created.Status, created.ReplayID)
+			a.printf("%s %s (%s). Follow it with `clerk-protect replay watch %s`.\n", a.out.Good("Started replay"), a.out.ID(created.ReplayID), status(a.out, created.Status), created.ReplayID)
 			return nil
 		},
 	}
@@ -157,7 +158,9 @@ func (a *app) replayListCmd() *cobra.Command {
 				return err
 			}
 			tw := a.table()
-			_, _ = fmt.Fprintln(tw, "ID\tSTATUS\tCREATED\tDECISIONS\tCHANGED\tNAME")
+			tw.Header("ID", "STATUS", "CREATED", "DECISIONS", "CHANGED", "NAME")
+			tw.Style(0, a.out.ID)
+			tw.Style(1, func(s string) style.Text { return status(a.out, s) })
 			for _, j := range list.Replays {
 				status := j.Status
 				if j.AppliedAt != "" {
@@ -211,7 +214,7 @@ func (a *app) watchReplay(cmd *cobra.Command, id string) error {
 			final, finalRaw = &job, ev.Data
 			return api.ErrStop
 		default:
-			a.notef("%s: %s (%d decisions read)\n", id, job.Status, job.DecisionsRead)
+			a.notef("%s: %s (%d decisions read)\n", a.errp.ID(id), status(a.errp, job.Status), job.DecisionsRead)
 		}
 		return nil
 	})
@@ -234,9 +237,9 @@ func (a *app) watchReplay(cmd *cobra.Command, id string) error {
 		return &exitError{code: ExitError, err: fmt.Errorf("replay %s failed: %s", id, msg)}
 	}
 	if !a.jsonOut {
-		a.printf("Replay %s finished: %d decisions read, %d would change.\n", id, final.DecisionsRead, final.MatchesTotal)
+		a.printf("Replay %s %s: %d decisions read, %s would change.\n", a.out.ID(id), a.out.Good("finished"), final.DecisionsRead, a.out.Emphasis(fmt.Sprint(final.MatchesTotal)))
 		if final.MatchesTrunc {
-			a.printf("The export holds only the first rows of those changes.\n")
+			a.printf("%s\n", a.out.Warn("The export holds only the first rows of those changes."))
 		}
 		a.printf("See the report with `clerk-protect replay get %s`; apply it with `clerk-protect replay apply %s`.\n", id, id)
 	}
@@ -335,7 +338,7 @@ func (a *app) replayApplyCmd() *cobra.Command {
 				if a.jsonOut {
 					return a.printJSON(map[string]any{"replay_id": args[0], "already_applied": true})
 				}
-				a.notef("Replay %s was already applied; nothing changed.\n", args[0])
+				a.notef("Replay %s was already applied; nothing changed.\n", a.errp.ID(args[0]))
 				return nil
 			}
 			if err != nil {
@@ -355,12 +358,12 @@ func (a *app) replayApplyCmd() *cobra.Command {
 			if err := json.Unmarshal(resp.Body, &applied); err != nil {
 				return err
 			}
-			a.printf("Applied replay %s.\n", args[0])
+			a.printf("%s %s.\n", a.out.Good("Applied replay"), a.out.ID(args[0]))
 			for _, r := range applied.Applied {
-				a.printf("  %s %s %s\n", r.Op, r.Ruleset, r.RuleID)
+				a.printf("  %s %s %s\n", a.out.Emphasis(r.Op), r.Ruleset, a.out.ID(r.RuleID))
 			}
 			for _, w := range applied.Warnings {
-				a.printf("  Note: %s\n", w)
+				a.printf("  %s %s\n", a.out.Warn("Note:"), w)
 			}
 			return nil
 		},

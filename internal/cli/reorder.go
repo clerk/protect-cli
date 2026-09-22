@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -161,7 +162,7 @@ func (a *app) rulesReorderCmd() *cobra.Command {
 					if a.jsonOut {
 						return a.printJSON(map[string]any{"ruleset": ruleset, "rule_ids": planned, "changed": false})
 					}
-					a.printf("%s is already in that order.\n", ruleset)
+					a.printf("%s is already in that order.\n", a.out.Emphasis(ruleset))
 					return nil
 				}
 				if dryRun {
@@ -182,13 +183,13 @@ func (a *app) rulesReorderCmd() *cobra.Command {
 					if a.jsonOut {
 						return a.printJSON(map[string]any{"ruleset": ruleset, "rule_ids": planned, "changed": true})
 					}
-					a.printf("Reordered %s.\n", ruleset)
+					a.printf("%s %s.\n", a.out.Good("Reordered"), a.out.Emphasis(ruleset))
 					return nil
 				}
 				if !isConflict(err) || attempt >= attempts {
 					return err
 				}
-				a.notef("The ruleset changed while reordering; trying again against the current order.\n")
+				a.notef("%s\n", a.errp.Warn("The ruleset changed while reordering; trying again against the current order."))
 			}
 		},
 	}
@@ -222,10 +223,10 @@ func (a *app) printOrder(current, planned []string) {
 		return
 	}
 	for i, id := range planned {
-		marker := "  "
+		marker := a.errp.Plain("  ")
 		if slices.Index(current, id) != i {
-			marker = "->"
+			marker = a.errp.Warn("->")
 		}
-		a.notef("%s #%d  %s\n", marker, i+1, id)
+		a.notef("%s %s  %s\n", marker, a.errp.Muted("#"+strconv.Itoa(i+1)), a.errp.ID(id))
 	}
 }
