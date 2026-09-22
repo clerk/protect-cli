@@ -40,10 +40,10 @@ func (a *app) loginCmd() *cobra.Command {
 				return err
 			}
 			if created {
-				a.notef("Created a device key: %s.\n", dev.Backend().Describe())
+				a.notef("%s %s.\n", a.errp.Good("Created a device key:"), dev.Backend().Describe())
 			}
 			if dev.Backend().Extractable() {
-				a.notef("Warning: this device key is a file. Anyone who can read it can use your credential.\n")
+				a.notef("%s this device key is a file. Anyone who can read it can use your credential.\n", a.errp.Warn("Warning:"))
 			}
 			host, _ := os.Hostname()
 			opener := a.openBrowser
@@ -57,6 +57,7 @@ func (a *app) loginCmd() *cobra.Command {
 				DeviceName:    host,
 				OpenBrowser:   opener,
 				Out:           a.stderr,
+				Style:         a.errp,
 			})
 			if err != nil {
 				return err
@@ -77,7 +78,7 @@ func (a *app) loginCmd() *cobra.Command {
 			if who == "" {
 				who = creds.Subject
 			}
-			a.printf("Signed in to %s as %s.\n", creds.InstanceID, who)
+			a.printf("%s %s as %s.\n", a.out.Good("Signed in to"), a.out.ID(creds.InstanceID), a.out.Emphasis(who))
 			a.printf("Access renews automatically until %s; after that, run `clerk-protect login` again.\n",
 				creds.AuthorizationExpiresAt.Local().Format(time.RFC1123))
 			return nil
@@ -143,7 +144,7 @@ func (a *app) logoutCmd() *cobra.Command {
 				if err := keystore.Delete(); err != nil {
 					return err
 				}
-				a.printf("Signed out everywhere and deleted the device key.\n")
+				a.printf("%s\n", a.out.Good("Signed out everywhere and deleted the device key."))
 				return nil
 			}
 			sel, err := a.selection()
@@ -154,7 +155,7 @@ func (a *app) logoutCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a.printf("Signed out of %s.\n", removed)
+			a.printf("%s %s.\n", a.out.Good("Signed out of"), a.out.ID(removed))
 			return nil
 		},
 	}
@@ -205,9 +206,9 @@ func (a *app) whoamiCmd() *cobra.Command {
 					}
 				}
 			}
-			tw := a.table()
+			tw := a.kvTable()
 			row := func(k, v string) { _, _ = tw.Write([]byte(k + "\t" + v + "\n")) }
-			row("Instance", str("instance_id"))
+			tw.Row(a.out.Label("Instance"), a.out.ID(str("instance_id")))
 			if sel.Profile != "" {
 				row("Profile", sel.Profile+" (from "+sel.ProfileSource+")")
 			}
@@ -248,15 +249,15 @@ func (a *app) keysCmd() *cobra.Command {
 				a.printf("No device key on this computer. `clerk-protect login` creates one.\n")
 				return nil
 			}
-			tw := a.table()
+			tw := a.kvTable()
 			row := func(k, v string) { _, _ = tw.Write([]byte(k + "\t" + v + "\n")) }
 			row("Stored in", info.Backend.Describe())
 			if info.Backend.Extractable() {
-				row("Extractable", "YES")
+				tw.Row(a.out.Label("Extractable"), a.out.Bad("YES"))
 			} else {
-				row("Extractable", "no")
+				tw.Row(a.out.Label("Extractable"), a.out.Good("no"))
 			}
-			row("Fingerprint", dpop.Fingerprint(info.Thumbprint))
+			tw.Row(a.out.Label("Fingerprint"), a.out.Emphasis(dpop.Fingerprint(info.Thumbprint)))
 			row("Thumbprint", info.Thumbprint)
 			if info.Protection != "" {
 				row("Protection", info.Protection)

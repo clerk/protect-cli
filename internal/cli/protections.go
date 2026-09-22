@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/clerk/protect-cli/internal/api"
+	"github.com/clerk/protect-cli/internal/style"
 )
 
 type binding struct {
@@ -183,7 +184,9 @@ func (a *app) protectionsListCmd() *cobra.Command {
 				return a.printJSON(map[string]any{"protections": raws})
 			}
 			tw := a.table()
-			_, _ = fmt.Fprintln(tw, "NAME\tVERSION\tSTATE\tCATEGORY\tTITLE")
+			tw.Header("NAME", "VERSION", "STATE", "CATEGORY", "TITLE")
+			tw.Style(0, a.out.ID)
+			tw.Style(2, func(s string) style.Text { return status(a.out, s) })
 			for _, e := range entries {
 				category := e.Protection.DisplayCategory
 				if category == "" {
@@ -213,26 +216,26 @@ func (a *app) protectionsShowCmd() *cobra.Command {
 			if a.jsonOut {
 				return a.printRaw(raw)
 			}
-			a.printf("%s (version %d): %s\n", e.Protection.Name, e.Protection.Version, e.state())
+			a.printf("%s (version %d): %s\n", a.out.ID(e.Protection.Name), e.Protection.Version, status(a.out, e.state()))
 			if e.Protection.DisplayName != "" {
-				a.printf("  %s\n", e.Protection.DisplayName)
+				a.printf("  %s\n", a.out.Emphasis(e.Protection.DisplayName))
 			}
 			if e.Protection.Description != "" {
 				a.printf("  %s\n", e.Protection.Description)
 			}
 			if e.Activation != nil {
 				if e.Activation.ProtectionVersion != e.Protection.Version {
-					a.printf("  Set up against version %d; the current version is %d.\n", e.Activation.ProtectionVersion, e.Protection.Version)
+					a.printf("  %s\n", a.out.Warn(fmt.Sprintf("Set up against version %d; the current version is %d.", e.Activation.ProtectionVersion, e.Protection.Version)))
 				}
 				if len(e.Activation.Bindings) == 0 {
-					a.printf("  Bindings: defaults\n")
+					a.printf("  %s defaults\n", a.out.Label("Bindings:"))
 				}
 				for _, b := range e.Activation.Bindings {
 					name := b.Name
 					if b.SubRuleID != "" {
 						name = b.SubRuleID + ":" + b.Name
 					}
-					a.printf("  %s = %s\n", name, b.Expression)
+					a.printf("  %s = %s\n", a.out.Emphasis(name), b.Expression)
 				}
 			}
 			return nil
@@ -254,7 +257,7 @@ func (a *app) reportActivation(resp *api.Response, verb string) error {
 	if len(resp.Body) > 0 {
 		_ = json.Unmarshal(resp.Body, &act)
 	}
-	a.printf("%s %s.\n", verb, act.ProtectionName)
+	a.printf("%s %s.\n", a.out.Good(verb), a.out.ID(act.ProtectionName))
 	return nil
 }
 
@@ -395,7 +398,7 @@ func (a *app) protectionsResetCmd() *cobra.Command {
 			if a.jsonOut {
 				return a.printJSON(map[string]any{"reset": args[0]})
 			}
-			a.printf("Removed protection %s from this instance.\n", args[0])
+			a.printf("%s %s from this instance.\n", a.out.Good("Removed protection"), a.out.ID(args[0]))
 			return nil
 		},
 	}

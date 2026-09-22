@@ -21,7 +21,8 @@ import (
 	"github.com/clerk/protect-cli/internal/auth"
 	"github.com/clerk/protect-cli/internal/config"
 	"github.com/clerk/protect-cli/internal/profile"
-	"github.com/clerk/protect-cli/internal/textsafe"
+	"github.com/clerk/protect-cli/internal/style"
+	"github.com/clerk/protect-cli/internal/term"
 	"github.com/clerk/protect-cli/internal/version"
 )
 
@@ -45,6 +46,13 @@ type app struct {
 	apiURL   string
 	profile  string
 	yes      bool
+	color    string
+
+	// out colours what goes to stdout and errp what goes to stderr. Each is
+	// decided on its own — a command piped into a file can still colour its
+	// errors on the terminal — once flags are parsed (setColor), and out is
+	// always off with --json.
+	out, errp style.Palette
 
 	// sel is what commands act on, once a command has asked (see selection).
 	sel *selection
@@ -53,6 +61,10 @@ type app struct {
 	openBrowser func(string) error
 	isTerminal  func() bool
 	now         func() time.Time
+	// streamIsTerminal reports whether stdout or stderr is a terminal that will
+	// show colour; getenv reads NO_COLOR and TERM.
+	streamIsTerminal func(io.Writer) bool
+	getenv           func(string) string
 	// traceTTY is the terminal the interactive trace view reads keys from and
 	// draws on.
 	traceTTY func() (in, out *os.File)
@@ -72,12 +84,57 @@ func newApp(stdin io.Reader, stdout, stderr io.Writer, isTerminal func() bool) *
 	return &app{
 		stdin: stdin, stdout: stdout, stderr: stderr,
 		openBrowser: auth.OpenBrowser, isTerminal: isTerminal, now: time.Now,
+		streamIsTerminal: colorTerminal, getenv: os.Getenv,
 		traceTTY: func() (*os.File, *os.File) { return os.Stdin, os.Stdout },
 	}
 }
 
+// colorTerminal reports whether w is a terminal that will show colour. A
+// writer that is not a file — a test's buffer — never is.
+func colorTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(f.Fd()) && term.EnableColor(f.Fd())
+}
+
+// setColor decides both palettes from --color, NO_COLOR, TERM and whether
+// each stream is a terminal.
+func (a *app) setColor() error {
+	mode, err := style.ParseMode(a.color)
+	if err != nil {
+		return &exitError{code: ExitUsage, err: err}
+	}
+	a.errp = style.New(style.Decide(mode, a.streamIsTerminal(a.stderr), a.getenv))
+	a.out = style.New(!a.jsonOut && style.Decide(mode, a.streamIsTerminal(a.stdout), a.getenv))
+	return nil
+}
+
+// colorArg is the value of the last --color on a command line, read before
+// cobra parses it so that a flag mistake is reported as --color asks. It stops
+// at "--", past which nothing is a flag.
+func colorArg(args []string) string {
+	v := string(style.Auto)
+	for i, s := range args {
+		switch {
+		case s == "--":
+			return v
+		case s == "--color" && i+1 < len(args):
+			v = args[i+1]
+		case strings.HasPrefix(s, "--color="):
+			v = strings.TrimPrefix(s, "--color=")
+		}
+	}
+	return v
+}
+
 // execute runs one command line and returns its exit code.
 func (a *app) execute(args []string) int {
+	// Before flags are parsed, so a mistake in them is reported as --color
+	// asks; setColor decides again once cobra has parsed it.
+	early, perr := style.ParseMode(colorArg(args))
+	if perr != nil {
+		early = style.Auto
+	}
+	a.errp = style.New(style.Decide(early, a.streamIsTerminal(a.stderr), a.getenv))
 	root := a.rootCmd()
 	root.SetArgs(args)
 	root.SetIn(a.stdin)
@@ -91,11 +148,11 @@ func (a *app) execute(args []string) int {
 		return ExitOK
 	}
 	if errors.Is(err, errCancelled) {
-		_, _ = fmt.Fprintln(a.stderr, "Cancelled.")
+		_, _ = fmt.Fprintf(a.stderr, "%s\n", a.errp.Warn("Cancelled."))
 		return ExitError
 	}
 	// An error can carry the server's words; they reach a terminal only stripped.
-	_, _ = fmt.Fprintf(a.stderr, "Error: %s\n", textsafe.Strip(err.Error()))
+	_, _ = fmt.Fprintf(a.stderr, "%s %s\n", a.errp.ErrorPrefix("Error:"), a.errp.Plain(err.Error()))
 	return codeFor(err)
 }
 
@@ -136,10 +193,11 @@ func (a *app) rootCmd() *cobra.Command {
 		Short:         "Manage Clerk Protect for your instance from the command line",
 		Version:       version.Version,
 		SilenceErrors: true,
-		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			// Set here, after flag parsing, so a runtime error does not print the
 			// usage text while a flag mistake still does.
 			cmd.SilenceUsage = true
+			return a.setColor()
 		},
 	}
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
@@ -151,6 +209,7 @@ func (a *app) rootCmd() *cobra.Command {
 	pf.StringVar(&a.profile, "profile", "", "Profile to use (default: "+profile.EnvProfile+", else the default profile)")
 	pf.StringVar(&a.apiURL, "api-url", "", "API origin (default "+config.DefaultAPIBase+"; also "+config.EnvAPIURL+", or the profile's)")
 	pf.BoolVarP(&a.yes, "yes", "y", false, "Confirm changes without prompting (required when not running interactively)")
+	pf.StringVar(&a.color, "color", string(style.Auto), "Colour output: auto (only on a terminal, and not when NO_COLOR is set), always or never")
 
 	root.AddCommand(
 		a.loginCmd(),

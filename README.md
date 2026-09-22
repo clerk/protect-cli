@@ -136,6 +136,8 @@ per command, create the key with `CLERK_PROTECT_KEY_PROTECTION=presence` before 
 
 Every command accepts `--json` for machine-readable output.
 
+In a terminal, output is in colour. `--color auto|always|never` chooses (`auto`, the default, colours only a terminal), and `NO_COLOR` or `TERM=dumb` turn it off. `--json` output is never coloured, and neither is anything piped unless you ask with `--color always`.
+
 ## Scripts and automation
 
 - **Changes need confirmation.** A command that changes your configuration — creating, updating, enabling,

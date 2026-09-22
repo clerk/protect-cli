@@ -84,7 +84,9 @@ func (a *app) profileListCmd() *cobra.Command {
 				return nil
 			}
 			tw := a.table()
-			_, _ = tw.Write([]byte("\tNAME\tINSTANCE\tAPI URL\n"))
+			tw.Header("", "NAME", "INSTANCE", "API URL")
+			tw.Style(0, a.out.Good)
+			tw.Style(1, a.out.ID)
 			for _, r := range rows {
 				mark := ""
 				if r.Default {
@@ -154,16 +156,16 @@ func (a *app) profileShowCmd() *cobra.Command {
 				}
 				return a.printJSON(out)
 			}
-			tw := a.table()
+			tw := a.kvTable()
 			row := func(k, v string) { _, _ = tw.Write([]byte(k + "\t" + v + "\n")) }
 			row("Profile", sel.describe(sel.Profile, sel.ProfileSource, "none"))
 			row("Instance", sel.describe(sel.Instance, sel.InstanceSource, "none"))
 			row("API", sel.describe(sel.Base, sel.BaseSource, ""))
 			switch {
 			case signedIn:
-				row("Signed in", "yes, until "+until.Local().Format(time.RFC1123))
+				tw.Row(a.out.Label("Signed in"), a.out.Good("yes, until "+until.Local().Format(time.RFC1123)))
 			default:
-				row("Signed in", "no — run `clerk-protect login`")
+				tw.Row(a.out.Label("Signed in"), a.out.Warn("no — run `clerk-protect login`"))
 			}
 			return tw.Flush()
 		},
@@ -249,7 +251,7 @@ func (a *app) profileSetCmd() *cobra.Command {
 			if api == "" {
 				api = "not set"
 			}
-			a.printf("%s profile %s: instance %s, API URL %s.\n", verb, name, orDash(p.InstanceID), api)
+			a.printf("%s %s: instance %s, API URL %s.\n", a.out.Good(verb+" profile"), a.out.ID(name), a.out.ID(orDash(p.InstanceID)), api)
 			if set.Default != name {
 				a.printf("Use it with --profile %s, or make it the default with `clerk-protect profile use %s`.\n", name, name)
 			}
@@ -297,10 +299,10 @@ func (a *app) profileUseCmd() *cobra.Command {
 				a.printf("No default profile. Commands use the instance you signed in to last.\n")
 			} else {
 				a.printf("Commands now use profile %s (instance %s) unless --profile or --instance says otherwise.\n",
-					set.Default, orDash(set.Profiles[set.Default].InstanceID))
+					a.out.ID(set.Default), a.out.ID(orDash(set.Profiles[set.Default].InstanceID)))
 			}
 			if env := strings.TrimSpace(os.Getenv(profile.EnvProfile)); env != "" {
-				a.notef("Note: %s=%s is set here, and wins over the default.\n", profile.EnvProfile, env)
+				a.notef("%s %s=%s is set here, and wins over the default.\n", a.errp.Warn("Note:"), profile.EnvProfile, env)
 			}
 			return nil
 		},
@@ -334,7 +336,7 @@ func (a *app) profileDeleteCmd() *cobra.Command {
 			if a.jsonOut {
 				return a.printJSON(map[string]any{"deleted": name, "default": nilIfEmpty(set.Default)})
 			}
-			a.printf("Deleted profile %s.\n", name)
+			a.printf("%s %s.\n", a.out.Good("Deleted profile"), a.out.ID(name))
 			if wasDefault {
 				a.printf("It was the default; commands now use the instance you signed in to last.\n")
 			}
@@ -353,13 +355,13 @@ func (a *app) noteSelectionMismatch(sel *selection, approved string) {
 		return
 	}
 	if sel.InstanceSource == instanceFromProfile {
-		a.notef("Note: profile %s uses %s, not %s. Commands with that profile keep acting on %s, and need a sign-in "+
+		a.notef("%s profile %s uses %s, not %s. Commands with that profile keep acting on %s, and need a sign-in "+
 			"for it: open Protect Labs for %s from the Clerk Dashboard, then run `clerk-protect login` again. To use "+
 			"%s with the profile instead: clerk-protect profile set %s --instance %s\n",
-			sel.Profile, sel.Instance, approved, sel.Instance, sel.Instance, approved, sel.Profile, approved)
+			a.errp.Warn("Note:"), sel.Profile, sel.Instance, approved, sel.Instance, sel.Instance, approved, sel.Profile, approved)
 		return
 	}
-	a.notef("Note: you approved %s, not %s (--instance). The browser decides which instance you sign in to: open "+
+	a.notef("%s you approved %s, not %s (--instance). The browser decides which instance you sign in to: open "+
 		"Protect Labs for %s from the Clerk Dashboard, then run `clerk-protect login` again.\n",
-		approved, sel.Instance, sel.Instance)
+		a.errp.Warn("Note:"), approved, sel.Instance, sel.Instance)
 }

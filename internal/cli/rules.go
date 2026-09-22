@@ -14,6 +14,7 @@ import (
 
 	"github.com/clerk/protect-cli/internal/api"
 	"github.com/clerk/protect-cli/internal/httperr"
+	"github.com/clerk/protect-cli/internal/style"
 )
 
 type rateLimit struct {
@@ -109,7 +110,7 @@ func (a *app) rulesetsCmd() *cobra.Command {
 				return a.printJSON(map[string]any{"rulesets": sets})
 			}
 			tw := a.table()
-			_, _ = fmt.Fprintln(tw, "NAME\tLABEL\tDESCRIPTION")
+			tw.Header("NAME", "LABEL", "DESCRIPTION")
 			for _, s := range sets {
 				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, s.Label, s.Description)
 			}
@@ -181,10 +182,10 @@ func (a *app) rulesListCmd() *cobra.Command {
 					a.printf("\n")
 				}
 				if len(b.Rules) == 0 {
-					a.printf("%s: no rules\n", b.Ruleset)
+					a.printf("%s: %s\n", a.out.Emphasis(b.Ruleset), a.out.Muted("no rules"))
 					continue
 				}
-				a.printf("%s (%d)\n", b.Ruleset, len(b.Rules))
+				a.printf("%s (%d)\n", a.out.Emphasis(b.Ruleset), len(b.Rules))
 				for n, raw := range b.Rules {
 					var r rule
 					if err := json.Unmarshal(raw, &r); err != nil {
@@ -201,29 +202,31 @@ func (a *app) rulesListCmd() *cobra.Command {
 }
 
 func (a *app) renderRule(position int, r rule) {
+	// Each tag is coloured on its own, so the joined suffix is a style.Text.
 	var tags []string
 	if r.Disabled {
-		tags = append(tags, "disabled")
+		tags = append(tags, string(a.out.Word("disabled")))
 	}
 	if r.ExpiresAt != "" {
 		if t, err := time.Parse(time.RFC3339, r.ExpiresAt); err == nil && !t.After(a.now()) {
-			tags = append(tags, "expired "+r.ExpiresAt)
+			tags = append(tags, string(a.out.Bad("expired "+r.ExpiresAt)))
 		} else {
-			tags = append(tags, "expires "+r.ExpiresAt)
+			tags = append(tags, string(a.out.Muted("expires "+r.ExpiresAt)))
 		}
 	}
-	suffix := ""
+	suffix := style.Text("")
 	if len(tags) > 0 {
-		suffix = "  [" + strings.Join(tags, ", ") + "]"
+		suffix = style.Text("  [" + strings.Join(tags, ", ") + "]")
 	}
+	action := a.out.Word(strings.ToUpper(r.Action))
 	if position > 0 {
-		a.printf("  #%d  %s  %s%s\n", position, r.ID, strings.ToUpper(r.Action), suffix)
+		a.printf("  %s  %s  %s%s\n", a.out.Muted(fmt.Sprintf("#%d", position)), a.out.ID(r.ID), action, suffix)
 	} else {
-		a.printf("  %s  %s%s\n", r.ID, strings.ToUpper(r.Action), suffix)
+		a.printf("  %s  %s%s\n", a.out.ID(r.ID), action, suffix)
 	}
-	a.printf("      if: %s\n", r.Expression)
+	a.printf("      %s %s\n", a.out.Label("if:"), r.Expression)
 	if r.Description != "" {
-		a.printf("      description: %s\n", r.Description)
+		a.printf("      %s %s\n", a.out.Label("description:"), r.Description)
 	}
 	if rl := r.RateLimit; rl != nil {
 		keys := rl.Keys
@@ -238,7 +241,7 @@ func (a *app) renderRule(position int, r rule) {
 		if rl.IdentityKey != "" {
 			line += " (distinct " + rl.IdentityKey + ")"
 		}
-		a.printf("      rate limit: %s\n", line)
+		a.printf("      %s %s\n", a.out.Label("rate limit:"), line)
 	}
 	if ch := r.Challenge; ch != nil && ch.Type != "" {
 		line := ch.Type
@@ -248,7 +251,7 @@ func (a *app) renderRule(position int, r rule) {
 		if ch.DownloadBytes != "" {
 			line += " download=" + ch.DownloadBytes
 		}
-		a.printf("      challenge: %s\n", line)
+		a.printf("      %s %s\n", a.out.Label("challenge:"), line)
 	}
 }
 
@@ -457,7 +460,7 @@ func (a *app) reportRule(resp *api.Response, verb, ruleset string) error {
 	if err := json.Unmarshal(resp.Body, &r); err != nil {
 		return err
 	}
-	a.printf("%s rule %s in %s.\n", verb, r.ID, ruleset)
+	a.printf("%s %s in %s.\n", a.out.Good(verb+" rule"), a.out.ID(r.ID), a.out.Emphasis(ruleset))
 	a.renderRule(0, r)
 	return nil
 }
@@ -596,7 +599,7 @@ func (a *app) rulesDeleteCmd() *cobra.Command {
 			if a.jsonOut {
 				return a.printJSON(map[string]any{"deleted": args[0], "ruleset": ruleset})
 			}
-			a.printf("Deleted rule %s from %s.\n", args[0], ruleset)
+			a.printf("%s %s from %s.\n", a.out.Good("Deleted rule"), a.out.ID(args[0]), a.out.Emphasis(ruleset))
 			return nil
 		},
 	}
@@ -667,11 +670,11 @@ func (a *app) rulesValidateCmd() *cobra.Command {
 					return err
 				}
 			} else if verdict.Valid {
-				a.printf("Valid %v rule for %s.\n", body["action"], ruleset)
+				a.printf("%s %s rule for %s.\n", a.out.Good("Valid"), a.out.Word(fmt.Sprint(body["action"])), a.out.Emphasis(ruleset))
 			} else {
-				a.printf("Invalid:\n")
+				a.printf("%s\n", a.out.Bad("Invalid:"))
 				for _, e := range verdict.Errors {
-					a.printf("  %s: %s\n", e.Field, e.Message)
+					a.printf("  %s: %s\n", a.out.Emphasis(e.Field), e.Message)
 				}
 			}
 			if !verdict.Valid {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/clerk/protect-cli/internal/dpop"
+	"github.com/clerk/protect-cli/internal/style"
 )
 
 // Key is what sign-in needs from the device key.
@@ -33,7 +34,9 @@ type LoginOptions struct {
 	// OpenBrowser opens the authorization page. Nil prints the URL only.
 	OpenBrowser func(string) error
 	Out         io.Writer
-	HTTPClient  *http.Client
+	// Style colours the prompt written to Out; the zero value colours nothing.
+	Style      style.Palette
+	HTTPClient *http.Client
 	// Timeout bounds the wait for the browser. Zero means five minutes.
 	Timeout time.Duration
 }
@@ -140,14 +143,14 @@ func Login(ctx context.Context, o LoginOptions) (*Credentials, error) {
 	}()
 
 	authorize := AuthorizeURL(o.APIBase, redirect, state, challenge, o.Key.Thumbprint(), o.ClientVersion, o.DeviceName)
-	_, _ = fmt.Fprintf(out, "To approve this computer, open:\n\n  %s\n\n", authorize)
-	_, _ = fmt.Fprintf(out, "Approve only if the page shows this key fingerprint: %s\n\n", dpop.Fingerprint(o.Key.Thumbprint()))
+	_, _ = fmt.Fprintf(out, "To approve this computer, open:\n\n  %s\n\n", o.Style.Emphasis(authorize))
+	_, _ = fmt.Fprintf(out, "Approve only if the page shows this key fingerprint: %s\n\n", o.Style.Emphasis(dpop.Fingerprint(o.Key.Thumbprint())))
 	if o.OpenBrowser != nil {
 		if err := o.OpenBrowser(authorize); err != nil {
 			_, _ = fmt.Fprintf(out, "(Could not open a browser: %v. Open the address above yourself.)\n\n", err)
 		}
 	}
-	_, _ = fmt.Fprintln(out, "Waiting for the browser…")
+	_, _ = fmt.Fprintln(out, o.Style.Muted("Waiting for the browser…"))
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
