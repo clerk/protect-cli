@@ -93,11 +93,16 @@ jobs:
               return 1
             fi
           }
+          # Each listing is its own assignment, not an argument: a command
+          # substitution inside an argument hands on only the function's status,
+          # so a listing that failed partway would pass here under set -e.
           for f in dist/*.tar.gz; do
-            check_archive "$f" "LICENSE README.md clerk-protect " "$(tar -tzf "$f")"
+            listing="$(tar -tzf "$f")"
+            check_archive "$f" "LICENSE README.md clerk-protect " "$listing"
           done
           for f in dist/*.zip; do
-            check_archive "$f" "LICENSE README.md clerk-protect.exe " "$(unzip -Z1 "$f")"
+            listing="$(unzip -Z1 "$f")"
+            check_archive "$f" "LICENSE README.md clerk-protect.exe " "$listing"
           done
 
       - name: Forget the list
