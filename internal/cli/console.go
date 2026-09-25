@@ -1,12 +1,17 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/clerk/protect-cli/internal/api"
+	"github.com/clerk/protect-cli/internal/httperr"
 )
 
 // consolePathRe is the shape of a page on the console: a site-relative path of
@@ -35,26 +40,31 @@ func (a *app) consoleCmd() *cobra.Command {
 	return console
 }
 
-// consoleOpenCmd opens the console and nothing more.
+// consoleOpenCmd opens the console, signed in as this computer's sign-in.
 //
-// It cannot sign the browser in, by design: the browser's session is started
-// only from the Clerk Dashboard, and a credential bound to this computer's key
-// is never turned into a browser session, which could be copied off it. So the
-// page shows whichever instance the browser is signed in to, and this command
-// says which instance it names, so a difference is visible rather than silent.
+// With a sign-in for the selected instance it asks the server for a one-time
+// sign-in link and opens that, so the browser lands in Protect Labs as you, on
+// that instance. The link is opened, never printed: it is a credential for about
+// a minute, and a terminal's scrollback and logs are not the place for one. The
+// browser session it starts is yours alone (never an operator's), ends when this
+// computer's sign-in would, and cannot approve another computer's sign-in.
+//
+// Without a sign-in — or against a server that cannot mint one — it opens the
+// console unsigned-in, as it always did, and says so.
 func (a *app) consoleOpenCmd() *cobra.Command {
 	var path string
-	var noBrowser bool
+	var noBrowser, noSignIn bool
 	cmd := &cobra.Command{
 		Use:   "open",
-		Short: "Open Protect Labs in your browser",
-		Long: "Opens Protect Labs in your browser, at --path when given (for example /rules or /trace). Nothing is " +
-			"sent to the server, and this computer's sign-in is not used.\n\n" +
-			"Your browser has its own Protect Labs sign-in, for the instance you last opened Protect Labs for from " +
-			"the Clerk Dashboard, and the page shows that instance. If it is not the instance you want, open " +
-			"Protect Labs for that instance from the Clerk Dashboard.",
+		Short: "Open Protect Labs in your browser, signed in",
+		Long: "Opens Protect Labs in your browser at --path when given (for example /rules or /cli), signed in as " +
+			"this computer's sign-in for the selected instance. The browser session ends when this computer's " +
+			"sign-in would, and cannot approve a new command-line sign-in — do that from the Clerk Dashboard.\n\n" +
+			"With --no-sign-in, or when this computer is not signed in, the page opens without signing in and " +
+			"shows whichever instance your browser is already signed in to. --no-browser prints the page's address " +
+			"without signing in: a sign-in link is only ever opened, never printed.",
 		Args: noArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			sel, err := a.selection()
 			if err != nil {
 				return err
@@ -63,23 +73,47 @@ func (a *app) consoleOpenCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			returnTo := path
+			if returnTo == "" {
+				returnTo = "/"
+			}
+
+			signedIn := false
+			open := target
+			why := ""
+			switch {
+			case noBrowser:
+				why = "--no-browser prints the address only; a sign-in link is only ever opened"
+			case noSignIn:
+				why = "--no-sign-in"
+			default:
+				link, reason := a.consoleSignInLink(cmd, returnTo)
+				if link != "" {
+					open, signedIn = link, true
+				} else {
+					why = reason
+				}
+			}
+
 			var openErr error
 			if !noBrowser {
-				openErr = a.openBrowser(target)
+				openErr = a.openBrowser(open)
 			}
 			if a.jsonOut {
 				if err := a.printJSON(map[string]any{
-					"url": target, "instance_id": nilIfEmpty(sel.Instance), "opened": !noBrowser && openErr == nil,
+					"url": target, "instance_id": nilIfEmpty(sel.Instance), "signed_in": signedIn,
+					"opened": !noBrowser && openErr == nil,
 				}); err != nil {
 					return err
 				}
+			} else if signedIn {
+				a.printf("%s %s, signed in to %s.\n", a.out.Good("Opened"), a.out.Emphasis(target), a.out.ID(sel.Instance))
 			} else {
 				a.printf("%s\n", a.out.Emphasis(target))
 			}
-			if sel.Instance != "" {
-				a.notef("The page shows the instance your browser is signed in to. This command names %s; if the "+
-					"page shows another, open Protect Labs for %s from the Clerk Dashboard.\n",
-					sel.describe(sel.Instance, sel.InstanceSource, ""), sel.Instance)
+			if !signedIn && !a.jsonOut && sel.Instance != "" {
+				a.notef("Not signed in (%s): the page shows the instance your browser is signed in to, which may "+
+					"not be %s.\n", why, sel.describe(sel.Instance, sel.InstanceSource, ""))
 			}
 			if openErr != nil {
 				return fmt.Errorf("could not open a browser (%w); open the address above", openErr)
@@ -87,7 +121,37 @@ func (a *app) consoleOpenCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&path, "path", "", "Page to open, for example /rules or /trace")
-	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Print the address instead of opening a browser")
+	cmd.Flags().StringVar(&path, "path", "", "Page to open, for example /rules or /cli")
+	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Print the address instead of opening a browser (not signed in)")
+	cmd.Flags().BoolVar(&noSignIn, "no-sign-in", false, "Open the page without signing the browser in")
 	return cmd
+}
+
+// consoleSignInLink asks the server for a one-time console sign-in link. It
+// returns the link, or "" and the reason there is none — no sign-in on this
+// computer, a server that cannot mint one, or its refusal — which the caller
+// reports rather than fails on, because the page can still open.
+func (a *app) consoleSignInLink(cmd *cobra.Command, returnTo string) (string, string) {
+	c, _, err := a.client()
+	if err != nil {
+		return "", "this computer has no sign-in for it — run `clerk-protect login`"
+	}
+	var out struct {
+		LoginURL string `json:"login_url"`
+	}
+	if err := c.JSON(ctxOf(cmd), http.MethodPost, api.Path("cli", "console-link"), nil,
+		map[string]string{"return_to": returnTo}, &out); err != nil {
+		var he *httperr.Error
+		if errors.As(err, &he) && (he.Status == http.StatusNotFound || he.Status == http.StatusMethodNotAllowed) {
+			return "", "this server cannot sign a browser in yet"
+		}
+		return "", "the server did not sign the browser in: " + err.Error()
+	}
+	// Only a link on the API origin is opened: the server builds it from its own
+	// console origin, and a response is not a place to take a destination from on
+	// trust.
+	if !strings.HasPrefix(out.LoginURL, strings.TrimRight(c.Base, "/")+"/labs/auth/callback?") {
+		return "", "the server's sign-in link was not for this console"
+	}
+	return out.LoginURL, ""
 }

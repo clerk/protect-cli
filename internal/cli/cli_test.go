@@ -206,6 +206,7 @@ type fakeAPI struct {
 
 	mu       sync.Mutex
 	calls    []string
+	agents   []string // the User-Agent of each request, in the order of calls
 	posts    map[string]json.RawMessage
 	tokens   map[string]string // access token → the instance it was issued for
 	renewals int
@@ -281,6 +282,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+		f.agents = append(f.agents, r.Header.Get("User-Agent"))
 		_, known := f.tokens[f.token(r)]
 		f.mu.Unlock()
 		// The code exchange is the one request that carries no token yet.
