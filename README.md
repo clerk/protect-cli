@@ -1,5 +1,13 @@
 # clerk-protect
 
+> [!IMPORTANT]
+> **Early access only.** `clerk-protect` is for customers in the Clerk Protect early-access program. It signs in
+> through Protect Labs, which Clerk turns on instance by instance for those customers, so without early access
+> there is no way to sign in. Commands, flags and output can change between releases. Questions go to your shared
+> Slack channel with Clerk.
+>
+> Looking for the Clerk CLI that adds Clerk to an app? That is [`clerk`](https://github.com/clerk/cli).
+
 Manage Clerk Protect for your instance from the command line: custom rules, protections, investigations,
 live decisions and replays.
 
