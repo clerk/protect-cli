@@ -69,11 +69,35 @@ jobs:
             rm dist/clerk-protect
           done
 
+          # zip stores each path exactly as it is named, so the files are named
+          # from the repository root and -j keeps only their base names. Run
+          # from inside dist/, the old command stored README.md and LICENSE as
+          # "../README.md" and "../LICENSE": PowerShell's Expand-Archive refuses
+          # both entries as outside the destination, in red, on every install.
           for arch in amd64 arm64; do
             GOOS=windows GOARCH="$arch" CGO_ENABLED=0 \
               make binary BIN=dist/clerk-protect.exe VERSION="$VERSION"
-            (cd dist && zip -q "clerk-protect-${VERSION}-windows-${arch}.zip" clerk-protect.exe ../README.md ../LICENSE)
+            zip -q -j "dist/clerk-protect-${VERSION}-windows-${arch}.zip" dist/clerk-protect.exe README.md LICENSE
             rm dist/clerk-protect.exe
+          done
+
+          # Every archive holds exactly the binary, README.md and LICENSE, at its
+          # top level. A path with a directory in it — "../", "dist/" — is what a
+          # person unpacking by hand trips over, and nothing else here reads the
+          # archives' contents before they are published.
+          check_archive() {
+            local archive="$1" want="$2" got
+            got="$(LC_ALL=C sort <<<"$3" | tr '\n' ' ')"
+            if [ "$got" != "$want" ]; then
+              echo "$archive holds: $got— want exactly: $want" >&2
+              return 1
+            fi
+          }
+          for f in dist/*.tar.gz; do
+            check_archive "$f" "LICENSE README.md clerk-protect " "$(tar -tzf "$f")"
+          done
+          for f in dist/*.zip; do
+            check_archive "$f" "LICENSE README.md clerk-protect.exe " "$(unzip -Z1 "$f")"
           done
 
       - name: Forget the list
