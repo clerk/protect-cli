@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 	"time"
 
@@ -80,7 +79,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, isTerminal fu
 }
 
 func newApp(stdin io.Reader, stdout, stderr io.Writer, isTerminal func() bool) *app {
-	auth.UserAgent = fmt.Sprintf("clerk-protect/%s (%s/%s)", version.Version, runtime.GOOS, runtime.GOARCH)
+	auth.UserAgent = version.UserAgent()
 	return &app{
 		stdin: stdin, stdout: stdout, stderr: stderr,
 		openBrowser: auth.OpenBrowser, isTerminal: isTerminal, now: time.Now,
@@ -222,6 +221,7 @@ func (a *app) rootCmd() *cobra.Command {
 		a.schemaCmd(),
 		a.fieldsCmd(),
 		a.protectionsCmd(),
+		a.tablesCmd(),
 		a.insightsCmd(),
 		a.traceCmd(),
 		a.consoleCmd(),

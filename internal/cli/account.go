@@ -225,7 +225,8 @@ func (a *app) whoamiCmd() *cobra.Command {
 }
 
 func (a *app) keysCmd() *cobra.Command {
-	keys := &cobra.Command{Use: "keys", Short: "Inspect this computer's device key"}
+	keys := &cobra.Command{Use: "keys", Short: "Inspect this computer's device key, and the computers signed in as you"}
+	keys.AddCommand(a.keysListCmd())
 	keys.AddCommand(&cobra.Command{
 		Use:   "status",
 		Short: "Show where the device key lives and whether it can leave this computer",

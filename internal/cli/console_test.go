@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -29,38 +30,91 @@ func consoleOpenArgs(args ...string) []string {
 	return append(strings.Fields("console open"), args...)
 }
 
-// console open opens a page on the API origin — the console's — names the
-// instance the command would act on, and sends nothing: the browser signs in on
-// its own, and this computer's credential never becomes a browser session.
-func TestConsoleOpen_opensThePageAndSendsNothing(t *testing.T) {
+// consoleLinkRoute answers POST /labs/api/cli/console-link as the server does:
+// a one-time link on the console's own origin, returning to the page asked for.
+func (f *fakeAPI) consoleLinkRoute(t *testing.T) *[]string {
+	t.Helper()
+	var asked []string
+	f.mux.HandleFunc("POST /labs/api/cli/console-link", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ReturnTo string `json:"return_to"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		asked = append(asked, body.ReturnTo)
+		f.json(w, 200, `{"login_url":"`+f.srv.URL+`/labs/auth/callback?code=one-time-secret","expires_at":"2030-01-01T00:00:00Z"}`)
+	})
+	return &asked
+}
+
+// Signed in, console open asks for a one-time sign-in link for the page and
+// opens THAT — and never prints it: it is a credential for a minute, and a
+// terminal's scrollback is not the place for one.
+func TestConsoleOpen_signsTheBrowserInAndNeverPrintsTheLink(t *testing.T) {
 	f := newFakeAPI(t)
 	f.signIn(t)
-	before := f.callCount()
+	asked := f.consoleLinkRoute(t)
 	var opened []string
 	browser := func(u string) error { opened = append(opened, u); return nil }
 
 	code, out, errOut := f.runWithBrowser(t, browser, consoleOpenArgs("--api-url", f.srv.URL, "--path", "/rules")...)
-	if code != ExitOK || len(opened) != 1 || opened[0] != f.srv.URL+"/rules" {
+	if code != ExitOK || len(opened) != 1 || !strings.HasPrefix(opened[0], f.srv.URL+"/labs/auth/callback?code=") {
 		t.Fatalf("code %d opened %v err %s", code, opened, errOut)
 	}
-	if !strings.Contains(out, f.srv.URL+"/rules") || !strings.Contains(errOut, instanceA+" (from last sign-in)") {
-		t.Fatalf("did not print the address and name the instance: out %s err %s", out, errOut)
+	if len(*asked) != 1 || (*asked)[0] != "/rules" {
+		t.Fatalf("asked to return to %v, want /rules", *asked)
+	}
+	if strings.Contains(out+errOut, "one-time-secret") {
+		t.Fatalf("the sign-in link was printed: out %q err %q", out, errOut)
+	}
+	if !strings.Contains(out, "signed in to "+instanceA) {
+		t.Fatalf("did not say it signed in: %s", out)
 	}
 
+	// --json reports it, without the link.
 	opened = nil
-	if code, _, _ := f.runWithBrowser(t, browser, consoleOpenArgs("--api-url", f.srv.URL)...); code != ExitOK || len(opened) != 1 || opened[0] != f.srv.URL+"/" {
-		t.Fatalf("no --path: code %d opened %v", code, opened)
+	code, out, _ = f.runWithBrowser(t, browser, consoleOpenArgs("--api-url", f.srv.URL, "--json")...)
+	var got map[string]any
+	if code != ExitOK || json.Unmarshal([]byte(out), &got) != nil || got["signed_in"] != true || strings.Contains(out, "one-time-secret") {
+		t.Fatalf("--json: code %d out %s", code, out)
+	}
+}
+
+// --no-browser and --no-sign-in open (or print) the page itself and ask the
+// server for nothing.
+func TestConsoleOpen_withoutSigningIn(t *testing.T) {
+	f := newFakeAPI(t)
+	f.signIn(t)
+	asked := f.consoleLinkRoute(t)
+	var opened []string
+	browser := func(u string) error { opened = append(opened, u); return nil }
+
+	code, out, errOut := f.runWithBrowser(t, browser, consoleOpenArgs("--api-url", f.srv.URL, "--no-sign-in", "--path", "/trace")...)
+	if code != ExitOK || len(opened) != 1 || opened[0] != f.srv.URL+"/trace" || !strings.Contains(errOut, "Not signed in (--no-sign-in)") {
+		t.Fatalf("--no-sign-in: code %d opened %v out %s err %s", code, opened, out, errOut)
 	}
 
 	opened = nil
 	code, out, _ = f.runWithBrowser(t, browser, consoleOpenArgs("--api-url", f.srv.URL, "--no-browser", "--json")...)
 	var got map[string]any
-	if code != ExitOK || len(opened) != 0 || json.Unmarshal([]byte(out), &got) != nil || got["url"] != f.srv.URL+"/" || got["opened"] != false {
+	if code != ExitOK || len(opened) != 0 || json.Unmarshal([]byte(out), &got) != nil || got["url"] != f.srv.URL+"/" ||
+		got["opened"] != false || got["signed_in"] != false {
 		t.Fatalf("--no-browser --json: code %d opened %v out %s", code, opened, out)
 	}
+	if len(*asked) != 0 {
+		t.Fatalf("asked the server for a sign-in link: %v", *asked)
+	}
+}
 
-	if f.callCount() != before {
-		t.Fatalf("console open sent %d requests", f.callCount()-before)
+// A server that predates the route, or a computer with no sign-in, still opens
+// the page — unsigned-in, and saying so.
+func TestConsoleOpen_fallsBackToThePage(t *testing.T) {
+	f := newFakeAPI(t)
+	f.signIn(t) // no console-link route mounted: the fake answers 404
+	var opened []string
+	code, _, errOut := f.runWithBrowser(t, func(u string) error { opened = append(opened, u); return nil },
+		consoleOpenArgs("--api-url", f.srv.URL)...)
+	if code != ExitOK || len(opened) != 1 || opened[0] != f.srv.URL+"/" || !strings.Contains(errOut, "cannot sign a browser in yet") {
+		t.Fatalf("older server: code %d opened %v err %s", code, opened, errOut)
 	}
 }
 
