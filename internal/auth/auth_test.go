@@ -340,6 +340,31 @@ func TestLogin_givesUpAfterTheTimeout(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no approval arrived") {
 		t.Fatalf("err = %v", err)
 	}
+	if !strings.Contains(err.Error(), "clerk-protect login") {
+		t.Errorf("the timeout does not say how to try again: %v", err)
+	}
+}
+
+// Protect Labs keeps a waiting approval for ten minutes while a signed-out
+// person goes to the Clerk Dashboard to open it. Waiting much less leaves the
+// page offering Approve long after nothing is listening for the code.
+func TestLogin_waitsAsLongAsLabsKeepsTheRequest(t *testing.T) {
+	if defaultLoginTimeout != 10*time.Minute {
+		t.Fatalf("defaultLoginTimeout = %s, want the ten minutes Protect Labs keeps a waiting approval", defaultLoginTimeout)
+	}
+}
+
+func TestWaitLabel(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		10 * time.Minute:       "10 minutes",
+		time.Minute:            "1 minute",
+		200 * time.Millisecond: "200ms",
+		90 * time.Second:       "1m30s",
+	} {
+		if got := waitLabel(d); got != want {
+			t.Errorf("waitLabel(%s) = %q, want %q", d, got, want)
+		}
+	}
 }
 
 // Neither the code exchange nor a renewal follows a redirect: the proof, and on

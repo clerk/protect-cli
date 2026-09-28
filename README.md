@@ -17,12 +17,18 @@ live decisions and replays.
 
 ```bash
 brew tap clerk/protect-cli https://github.com/clerk/protect-cli
-brew install --cask clerk-protect     # macOS
-brew install clerk-protect            # Linux
+brew install --cask clerk/protect-cli/clerk-protect       # macOS
+brew install --formula clerk/protect-cli/clerk-protect    # Linux
 ```
 
+Use the full name, `clerk/protect-cli/clerk-protect`. Recent Homebrew refuses to load anything from a tap
+outside Homebrew's own until you name it or trust it, and stops with "Refusing to load … from untrusted tap"
+otherwise; naming it is what trusts it. On Linux, the full name with `--formula` also keeps Homebrew from
+trying the macOS cask first.
+
 On macOS the cask installs a package signed with Clerk's Developer ID and notarized by Apple, and puts
-`clerk-protect` in `/usr/local/bin`. `brew upgrade` updates either.
+`clerk-protect` in `/usr/local/bin`, so the installer asks for your administrator password. `brew upgrade`
+updates either.
 
 ### A release download
 
@@ -64,12 +70,25 @@ clerk-protect login
 `login` opens Protect Labs in your browser and asks you to approve this computer.
 
 1. If you are not signed in to Protect Labs, open it from the Clerk Dashboard for the instance you want to
-   use. The approval waits for you.
+   use: choose the application and instance, then **Configure → Protect → Labs → Open Labs**. Do it in the
+   browser `login` opened, because that is where the waiting approval is kept. The page keeps it for ten
+   minutes and your terminal waits about as long, but the two clocks are separate: if you approve after the
+   terminal has given up, the approval goes nowhere, and you run `clerk-protect login` again.
 2. Check that the key fingerprint on the page matches the one printed in your terminal.
 3. Approve. Your terminal finishes signing in.
 
+The browser has to be on this computer: the approval is handed back to `clerk-protect` on this computer's own
+network address (`127.0.0.1`). If the page opened in a browser you don't use for the Clerk Dashboard, paste
+the address `login` printed into the one you do (`--no-browser` prints it without opening anything).
+
+No Labs under Protect in the Dashboard? Protect Labs is in early access; ask your Clerk contact to turn it on
+for that instance.
+
 You get the permissions you have in Protect Labs for that instance, and no more. Access renews automatically
-for up to eight hours from when you opened Protect Labs; after that, run `clerk-protect login` again.
+while you use it — run a command that talks to Protect, such as `clerk-protect whoami`, at least every half
+hour — for up to eight hours from when you opened Protect Labs; after that, run `clerk-protect login` again.
+Signing in again always needs a person at a browser, so a sign-in does not yet suit CI or an agent that runs
+unattended for longer than that.
 
 To work with more than one instance, sign in to each. A command acts on the first of: `--instance ins_…`; the
 instance of the selected profile; the instance you signed in to last.
@@ -106,6 +125,9 @@ where the key lives is what protects your access.
 | Linux and other platforms | Not supported by default. `CLERK_PROTECT_KEY_BACKEND=file` stores it in a file (not available on Windows) | **Yes** — anyone who can read the file can use your access |
 
 `clerk-protect keys status` shows which one you have.
+
+On Linux, every command reads `CLERK_PROTECT_KEY_BACKEND` to find the key, not only `login`, so set it in your
+shell profile (`export CLERK_PROTECT_KEY_BACKEND=file`) rather than on one command.
 
 On a Mac the key signs without prompting while you are logged in. To require Touch ID (or your password) once
 per command, create the key with `CLERK_PROTECT_KEY_PROTECTION=presence` before your first `login` — or run
@@ -165,8 +187,10 @@ In a terminal, output is in colour. `--color auto|always|never` chooses (`auto`,
   does `logout --all`. When standard input is not a terminal it does not ask: it refuses unless you pass
   `--yes`, before sending anything. `profile` commands, and `logout` for one instance, change only this
   computer and do not ask.
-- **Renewal.** Access renews in the background once half of a token's hour has passed. Run a command at least
-  every half hour to stay signed in until the authorization ends; `trace` renews on its own while it runs.
+- **Renewal.** Access renews on the next request once half of a token's hour has passed. Run a command
+  that talks to Protect (`whoami`, say — not `profile`, `keys status`, or `console open` with `--no-sign-in`
+  or `--no-browser`, which never use this computer's sign-in) at least every half hour to stay signed in
+  until the authorization ends; `trace` renews on its own while it runs.
 - **Exit codes:** `0` success, `1` failure (including an invalid rule from `rules validate`), `2` a mistake
   in the command, `3` sign in again with `clerk-protect login`.
 - `CLERK_PROTECT_PROFILE` selects a profile, as `--profile` does. `CLERK_PROTECT_API_URL` points at another

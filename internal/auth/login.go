@@ -37,13 +37,22 @@ type LoginOptions struct {
 	// Style colours the prompt written to Out; the zero value colours nothing.
 	Style      style.Palette
 	HTTPClient *http.Client
-	// Timeout bounds the wait for the browser. Zero means five minutes.
+	// Timeout bounds the wait for the browser. Zero means ten minutes.
 	Timeout time.Duration
 }
 
 const (
-	clientName          = "clerk-protect"
-	defaultLoginTimeout = 5 * time.Minute
+	clientName = "clerk-protect"
+	// defaultLoginTimeout is as long as Protect Labs keeps a waiting approval
+	// for a browser that is not signed in yet. That person has to go to the
+	// Clerk Dashboard, find the instance and open Labs before they can approve,
+	// and five minutes left the page offering Approve long after this had
+	// stopped listening. The two clocks are still independent — this one
+	// starts when the browser opens, the page's when it first reads the
+	// request, and an approval already on screen does not expire — so a late
+	// approval can still find nobody here, and the timeout says to sign in
+	// again.
+	defaultLoginTimeout = 10 * time.Minute
 )
 
 // SanitizeLabel reduces a self-reported label — a hostname, a version — to what
@@ -77,6 +86,19 @@ func AuthorizeURL(base, redirect, state, challenge, jkt, version, device string)
 	v.Set("client_version", SanitizeLabel(version))
 	v.Set("device_name", SanitizeLabel(device))
 	return base + "/?" + v.Encode()
+}
+
+// waitLabel says how long login waits in the words a person would use:
+// "10 minutes" rather than Go's "10m0s". Anything that is not whole minutes
+// (only tests pass one) keeps Go's form.
+func waitLabel(d time.Duration) string {
+	if d < time.Minute || d%time.Minute != 0 {
+		return d.String()
+	}
+	if n := int(d / time.Minute); n != 1 {
+		return fmt.Sprintf("%d minutes", n)
+	}
+	return "1 minute"
 }
 
 type callbackResult struct {
@@ -150,7 +172,7 @@ func Login(ctx context.Context, o LoginOptions) (*Credentials, error) {
 			_, _ = fmt.Fprintf(out, "(Could not open a browser: %v. Open the address above yourself.)\n\n", err)
 		}
 	}
-	_, _ = fmt.Fprintln(out, o.Style.Muted("Waiting for the browser…"))
+	_, _ = fmt.Fprintln(out, o.Style.Muted(fmt.Sprintf("Waiting up to %s for the browser…", waitLabel(timeout))))
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -160,7 +182,7 @@ func Login(ctx context.Context, o LoginOptions) (*Credentials, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-timer.C:
-		return nil, fmt.Errorf("no approval arrived within %s", timeout)
+		return nil, fmt.Errorf("no approval arrived within %s; run `clerk-protect login` to try again", waitLabel(timeout))
 	}
 	if res.err != nil {
 		return nil, res.err
