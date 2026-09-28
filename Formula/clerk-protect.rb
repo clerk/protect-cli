@@ -10,18 +10,18 @@
 class ClerkProtect < Formula
   desc "Manage Clerk Protect for your instance from the command-line"
   homepage "https://github.com/clerk/protect-cli"
-  version "0.3.2"
+  version "0.3.3"
   license "MIT"
 
   depends_on :linux
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/clerk/protect-cli/releases/download/v0.3.2/clerk-protect-v0.3.2-linux-arm64.tar.gz"
-      sha256 "d9062c15eb368c2071fca70262365721ae2048dba2154409c8a25874601a65c1"
+      url "https://github.com/clerk/protect-cli/releases/download/v0.3.3/clerk-protect-v0.3.3-linux-arm64.tar.gz"
+      sha256 "89cb3be4bbafed343a9bf06e502def4c3ad308b5c5d6179d759b3f1925b6afb6"
     else
-      url "https://github.com/clerk/protect-cli/releases/download/v0.3.2/clerk-protect-v0.3.2-linux-amd64.tar.gz"
-      sha256 "82cb5aba2da16d82f564667d82311152931f3c05573e613c606658cda6dd0335"
+      url "https://github.com/clerk/protect-cli/releases/download/v0.3.3/clerk-protect-v0.3.3-linux-amd64.tar.gz"
+      sha256 "56340946665eb8fc3d9410bf79b11f57826b109504651c60787a309b825916e9"
     end
   end
 
