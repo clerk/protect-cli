@@ -20,7 +20,8 @@ const RenewFloor = 2 * time.Minute
 
 // unknownLifetimeWindow is how far ahead of expiry a token whose issue time was
 // never recorded — a credential stored by an earlier version — is renewed: half
-// of the longest token the server mints.
+// of the hour those versions' tokens always lived, since nothing else is known
+// about them.
 const unknownLifetimeWindow = 30 * time.Minute
 
 // Session hands out a usable access token, renewing it before it expires.
@@ -51,8 +52,8 @@ func (s *Session) now() time.Time {
 // next command asks for a sign-in. A window of the last two minutes of an hour
 // meant access effectively ended after the first hour for anyone whose commands
 // did not happen to land in those two minutes. Renewing from the half-way point
-// keeps a person who runs a command at least every half hour signed in for the
-// authorization's whole lifetime.
+// keeps shorter tokens usable while the person is active. A token that already
+// covers the authorization's remaining lifetime needs no renewal.
 func renewWindow(c *Credentials) time.Duration {
 	window := unknownLifetimeWindow
 	if !c.IssuedAt.IsZero() && c.ExpiresAt.After(c.IssuedAt) {

@@ -470,6 +470,8 @@ func TestSession_renewsOnceHalfTheTokensLifetimeHasPassed(t *testing.T) {
 		// A window of the last two minutes left this token alone, and the next
 		// command after it expired had to sign in again.
 		{"past half-way, with 25 minutes left", 35 * time.Minute, 25 * time.Minute, true},
+		{"six-hour certificate cap, before half-way", 2 * time.Hour, 4 * time.Hour, false},
+		{"six-hour certificate cap, past half-way", 3*time.Hour + 5*time.Minute, 3*time.Hour - 5*time.Minute, true},
 		{"a short token inside the floor", 10 * time.Second, 110 * time.Second, true},
 		{"no recorded issue time, 45 minutes left", unknownIssue, 45 * time.Minute, false},
 		{"no recorded issue time, 20 minutes left", unknownIssue, 20 * time.Minute, true},
@@ -511,6 +513,31 @@ func TestSession_doesNotRenewATokenThatEndsWithItsAuthorization(t *testing.T) {
 	}
 	if _, ok := s.ReconnectBy(); ok {
 		t.Fatal("ReconnectBy offered a reconnect that could not renew")
+	}
+}
+
+// The same token remains usable after an idle laptop wakes later in the
+// workday. No request needs to land in a renewal window to keep it alive.
+func TestSession_workdayTokenSurvivesIdleUntilItsAuthorizationEnds(t *testing.T) {
+	f := newFakeServer(t)
+	s := sessionFor(t, f, 0, 8*time.Hour, 8*time.Hour)
+	s.Creds.AuthorizationExpiresAt = s.Creds.ExpiresAt
+	issuedAt := s.Creds.IssuedAt
+	for _, elapsed := range []time.Duration{90 * time.Minute, 7*time.Hour + 59*time.Minute} {
+		s.Now = func() time.Time { return issuedAt.Add(elapsed) }
+		if tok, err := s.Token(context.Background()); err != nil || tok != "tok-1" {
+			t.Fatalf("after %s idle: Token = %q, %v", elapsed, tok, err)
+		}
+	}
+	s.Now = func() time.Time { return s.Creds.AuthorizationExpiresAt }
+	if _, err := s.Token(context.Background()); !errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("at the authorization end: %v, want ErrLoginRequired", err)
+	}
+	if f.renewals.Load() != 0 {
+		t.Fatal("renewed a token that already covers its authorization")
+	}
+	if _, ok := s.ReconnectBy(); ok {
+		t.Fatal("offered a reconnect that cannot extend the authorization")
 	}
 }
 

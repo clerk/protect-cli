@@ -25,8 +25,12 @@ const maxEventLine = 1 << 20
 // a colon is a comment. A frame with no `event:` is named "message". A partial
 // frame at end of stream is dropped, as a browser drops it.
 func ReadEvents(r io.Reader, fn func(Event) error) error {
+	return readEvents(r, maxEventLine, fn)
+}
+
+func readEvents(r io.Reader, maxLine int, fn func(Event) error) error {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64<<10), maxEventLine)
+	sc.Buffer(make([]byte, 64<<10), maxLine)
 	var name string
 	var data []string
 	var hasData bool
