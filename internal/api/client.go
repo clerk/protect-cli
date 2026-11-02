@@ -208,6 +208,29 @@ func (c *Client) Stream(ctx context.Context, path string, query url.Values, fn f
 	if err != nil {
 		return err
 	}
+	return c.stream(req, maxEventLine, fn)
+}
+
+// maxPostEventLine bounds one line of a POSTed stream. An investigation sends
+// result rows in batches, one frame each, so a frame can be far larger than a
+// live decision.
+const maxPostEventLine = 16 << 20
+
+// StreamPost sends a JSON body and reads the Server-Sent Events response, as
+// Stream does for a GET.
+func (c *Client) StreamPost(ctx context.Context, path string, in any, fn func(Event) error) error {
+	body, err := encode(in)
+	if err != nil {
+		return err
+	}
+	req, err := c.request(ctx, http.MethodPost, path, nil, body, "text/event-stream")
+	if err != nil {
+		return err
+	}
+	return c.stream(req, maxPostEventLine, fn)
+}
+
+func (c *Client) stream(req *http.Request, maxLine int, fn func(Event) error) error {
 	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		return err
@@ -217,7 +240,7 @@ func (c *Client) Stream(ctx context.Context, path string, query url.Values, fn f
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return refusal(resp.StatusCode, data)
 	}
-	err = ReadEvents(resp.Body, fn)
+	err = readEvents(resp.Body, maxLine, fn)
 	if errors.Is(err, ErrStop) {
 		return nil
 	}

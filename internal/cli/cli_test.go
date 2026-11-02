@@ -135,6 +135,13 @@ func TestInsightsBody(t *testing.T) {
 	if body["from"] != "2026-01-01T00:00:00Z" || len(body["filter"].([]any)) != 2 {
 		t.Fatalf("body %v", body)
 	}
+	for _, query := range []string{`{"from":"2026-09-14T10:00:00Z"}`, `{"from":"2026-09-14T10:00:00Z","to":null}`} {
+		cmd, q = newCmd("--query", query)
+		body, err = q.body(cmd, now, noFile)
+		if err != nil || body["from"] != "2026-09-14T10:00:00Z" || body["to"] != "2026-09-14T12:00:00Z" {
+			t.Fatalf("partial window did not freeze its end: %v, %v", body, err)
+		}
+	}
 
 	cmd, q = newCmd("--from", "2026-09-14T12:00:00Z", "--to", "2026-09-14T11:00:00Z")
 	if _, err := q.body(cmd, now, noFile); err == nil {

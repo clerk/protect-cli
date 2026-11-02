@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ type insightsQuery struct {
 	filters    []string
 	excludes   []string
 	expression string
+	flowID     string
 	unit       string
 	traffic    []string
 	requests   []string
@@ -34,15 +36,19 @@ func (q *insightsQuery) register(cmd *cobra.Command) {
 	f := cmd.Flags()
 	f.StringVar(&q.query, "query", "", "The request body as JSON; flags below are applied on top")
 	f.StringVar(&q.file, "file", "", "Read the request body as JSON from this file (- for stdin)")
-	f.DurationVar(&q.since, "since", 24*time.Hour, "Look back this far from now")
+	f.DurationVar(&q.since, "since", 24*time.Hour, "Look back this far from now (up to 336h / 14 days of retained decisions)")
 	f.StringVar(&q.from, "from", "", "Window start, RFC 3339 (overrides --since)")
 	f.StringVar(&q.to, "to", "", "Window end, RFC 3339 (default now)")
 	f.StringArrayVar(&q.filters, "filter", nil, "Keep rows where a dimension has one of these values: dimension=value1,value2 (repeatable)")
 	f.StringArrayVar(&q.excludes, "exclude", nil, "Drop rows where a dimension has one of these values: dimension=value1,value2 (repeatable)")
-	f.StringVar(&q.expression, "expression", "", "A filter expression over the row's fields, combined with --filter")
+	f.StringVar(&q.expression, "expression", "", "A filter expression; rule paths such as ip.asn.type are also accepted (see insights fields)")
 	f.StringVar(&q.unit, "unit", "", "What to count: decisions (default) or flows")
 	f.StringArrayVar(&q.traffic, "traffic-class", nil, "Only this traffic class (repeatable)")
 	f.StringArrayVar(&q.requests, "request-type", nil, "Only this request type: signin, signup, email, sms (repeatable)")
+}
+
+func (q *insightsQuery) registerFlowID(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&q.flowID, "flow-id", "", "Keep decisions from this sign-in or sign-up ID (decisions unit only)")
 }
 
 func parseFilter(s, op string) (map[string]any, error) {
@@ -83,6 +89,9 @@ func (q *insightsQuery) body(cmd *cobra.Command, now time.Time, readFile func(st
 		body = map[string]any{}
 	}
 
+	// Supplied times keep their precision so a printed window round-trips
+	// through --from/--to exactly; "now" is whole seconds to stay readable.
+	now = now.Truncate(time.Second)
 	f := cmd.Flags()
 	_, hasWindow := body["from"]
 	if !hasWindow || f.Changed("since") || f.Changed("from") || f.Changed("to") {
@@ -105,8 +114,20 @@ func (q *insightsQuery) body(cmd *cobra.Command, now time.Time, readFile func(st
 		if !start.Before(end) {
 			return nil, usageError("the window is empty: its start is not before its end")
 		}
-		body["from"] = start.UTC().Format(time.RFC3339)
-		body["to"] = end.UTC().Format(time.RFC3339)
+		body["from"] = start.UTC().Format(time.RFC3339Nano)
+		body["to"] = end.UTC().Format(time.RFC3339Nano)
+	}
+	// A partial JSON window must use one end time across every search page,
+	// rather than asking the server to choose a fresh "now" on each request.
+	if body["to"] == nil {
+		body["to"] = now.UTC().Format(time.RFC3339Nano)
+	}
+	// A null start gets the server's own default, 24 hours before the end, so
+	// search can print the exact window a later --cursor continuation must reuse.
+	if end, ok := body["to"].(string); ok && body["from"] == nil {
+		if t, err := time.Parse(time.RFC3339, end); err == nil {
+			body["from"] = t.Add(-24 * time.Hour).UTC().Format(time.RFC3339Nano)
+		}
 	}
 
 	filters, _ := body["filter"].([]any)
@@ -132,8 +153,38 @@ func (q *insightsQuery) body(cmd *cobra.Command, now time.Time, readFile func(st
 	if f.Changed("expression") {
 		body["expression"] = q.expression
 	}
-	if f.Changed("unit") && q.unit != "decisions" {
+	if f.Changed("unit") {
 		body["unit"] = q.unit
+	}
+	if body["unit"] == "decisions" {
+		delete(body, "unit")
+	}
+	if f.Changed("flow-id") {
+		if strings.TrimSpace(q.flowID) == "" {
+			return nil, usageError("--flow-id must not be empty")
+		}
+		for _, r := range q.flowID {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			default:
+				return nil, usageError("--flow-id must contain only letters, digits, underscores or hyphens")
+			}
+		}
+		if unit, _ := body["unit"].(string); unit != "" && unit != "decisions" {
+			return nil, usageError("--flow-id filters decisions; use --unit decisions")
+		}
+		expression, ok := body["expression"].(string)
+		if body["expression"] != nil && !ok {
+			return nil, usageError("expression must be a string")
+		}
+		flow := "flow_id == " + strconv.Quote(q.flowID)
+		if strings.TrimSpace(expression) != "" {
+			if !selfContainedExpression(expression) {
+				return nil, usageError("expression must have balanced parentheses and closed strings when combined with --flow-id")
+			}
+			flow = "(" + expression + ") && (" + flow + ")"
+		}
+		body["expression"] = flow
 	}
 	if len(q.traffic) > 0 {
 		body["traffic_classes"] = q.traffic
@@ -144,14 +195,52 @@ func (q *insightsQuery) body(cmd *cobra.Command, now time.Time, readFile func(st
 	return body, nil
 }
 
+// The expression must not close the group we wrap around it. This only checks
+// the grouping boundary; the server still validates the expression itself.
+func selfContainedExpression(expression string) bool {
+	depth := 0
+	quoted := false
+	for i := 0; i < len(expression); i++ {
+		ch := expression[i]
+		if quoted {
+			switch ch {
+			case '\\':
+				i++
+			case '"':
+				quoted = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			quoted = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0 && !quoted
+}
+
 func (a *app) insightsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "insights",
 		Short: "Investigate decisions on this instance",
-		Long:  "Every insights command prints the server's JSON response. Windows default to the last 24 hours.",
+		Long: `Insights commands print JSON. Windows default to the last 24 hours; decisions
+are retained for 14 days. Search follows pages to satisfy --limit.
+
+Use --filter for dimension names from 'insights dimensions'. Expressions accept
+column names and compatible rule paths, e.g. ip.asn.type == "hosting".
+'insights fields' lists expression fields and their available aliases.
+Use --flow-id to find decisions belonging to one sign-in or sign-up.`,
 	}
 	cmd.AddCommand(
 		a.insightsDimensionsCmd(),
+		a.insightsFieldsCmd(),
 		a.insightsPostCmd("facets", "facets", "Count the values of each dimension in a window", func(cmd *cobra.Command, body map[string]any) error {
 			if n, _ := cmd.Flags().GetInt("top-n"); cmd.Flags().Changed("top-n") {
 				body["top_n"] = n
@@ -176,22 +265,7 @@ func (a *app) insightsCmd() *cobra.Command {
 			cmd.Flags().Int("interval-seconds", 0, "Bucket width")
 			cmd.Flags().String("group-by", "", "Split the series by this dimension")
 		}),
-		a.insightsPostCmd("search", "decisions/search", "List decisions, newest first", func(cmd *cobra.Command, body map[string]any) error {
-			if n, _ := cmd.Flags().GetInt("limit"); cmd.Flags().Changed("limit") {
-				body["limit"] = n
-			}
-			if c, _ := cmd.Flags().GetString("cursor"); c != "" {
-				body["cursor"] = c
-			}
-			if exprs, _ := cmd.Flags().GetStringArray("computed"); len(exprs) > 0 {
-				body["computed"] = exprs
-			}
-			return nil
-		}, func(cmd *cobra.Command) {
-			cmd.Flags().Int("limit", 0, "Rows per page")
-			cmd.Flags().String("cursor", "", "Continue from a previous page's cursor")
-			cmd.Flags().StringArray("computed", nil, "Also answer this expression for every row (repeatable)")
-		}),
+		a.insightsSearchCmd(),
 		a.insightsPostCmd("entity", "entity", "Profile one value of one dimension over the window", func(cmd *cobra.Command, body map[string]any) error {
 			if d, _ := cmd.Flags().GetString("dimension"); d != "" {
 				body["dimension"] = d
@@ -215,6 +289,37 @@ func (a *app) insightsCmd() *cobra.Command {
 		a.insightsValidateFilterCmd(),
 	)
 	return cmd
+}
+
+func (a *app) insightsFieldsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "fields",
+		Short: "Expression fields and compatible rule-path aliases for decisions",
+		Long: `List expression fields, including fields such as flow_id that are not facet
+dimensions. Aliases use the same values as their column name; other rule fields
+may use different values or may not be available in historical decisions.
+
+Aliases are included when the server publishes them. Use 'schema' to discover
+which fields a rule can use for its event type.`,
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, _, err := a.client()
+			if err != nil {
+				return err
+			}
+			resp, err := c.Do(ctxOf(cmd), http.MethodGet, api.Path("insights", "dimensions"), nil, nil)
+			if err != nil {
+				return err
+			}
+			var catalog struct {
+				Fields json.RawMessage `json:"fields"`
+			}
+			if err := json.Unmarshal(resp.Body, &catalog); err != nil || len(catalog.Fields) == 0 {
+				return errors.New("the server did not return expression fields")
+			}
+			return a.printRaw(catalog.Fields)
+		},
+	}
 }
 
 func (a *app) insightsDimensionsCmd() *cobra.Command {
@@ -274,6 +379,9 @@ func (a *app) insightsPostCmd(use, route, short string, extra func(*cobra.Comman
 		},
 	}
 	q.register(cmd)
+	if use == "facets" || use == "timeseries" {
+		q.registerFlowID(cmd)
+	}
 	if flags != nil {
 		flags(cmd)
 	}

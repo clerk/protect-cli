@@ -191,8 +191,8 @@ func (a *app) traceCmd() *cobra.Command {
 			"--no-tui, or when input or output is not a terminal, each decision is printed as one line instead " +
 			"(with --json, as the server's JSON).\n\n" +
 			"--filter keeps decisions whose field matches: field=value, field!=value or field~text ignoring case, " +
-			"or field==value exactly. --field key=value is the same as --filter key==value. The stream is reopened " +
-			"before the sign-in token expires, so it runs for as long as your access renews.",
+			"or field==value exactly. --field key=value is the same as --filter key==value. Trace uses your current authorization and reconnects " +
+			"before a shorter token expires, while renewal can extend it.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			want := map[string]string{}

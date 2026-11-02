@@ -223,6 +223,7 @@ func (a *app) rootCmd() *cobra.Command {
 		a.protectionsCmd(),
 		a.tablesCmd(),
 		a.insightsCmd(),
+		a.investigateCmd(),
 		a.traceCmd(),
 		a.consoleCmd(),
 		a.matchesCmd(),

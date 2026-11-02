@@ -79,8 +79,9 @@ func (a *app) loginCmd() *cobra.Command {
 				who = creds.Subject
 			}
 			a.printf("%s %s as %s.\n", a.out.Good("Signed in to"), a.out.ID(creds.InstanceID), a.out.Emphasis(who))
-			a.printf("Access renews automatically until %s; after that, run `clerk-protect login` again.\n",
+			a.printf("Authorization ends at %s; after that, run `clerk-protect login` again.\n",
 				creds.AuthorizationExpiresAt.Local().Format(time.RFC1123))
+			a.printf("The token may expire sooner; `clerk-protect whoami` shows its expiry.\n")
 			return nil
 		},
 	}
@@ -127,7 +128,7 @@ func (a *app) logoutCmd() *cobra.Command {
 			"computer, so it does not ask for --yes. With --all, removes every stored sign-in and deletes this " +
 			"computer's device key, which cannot be undone: it asks first, and when not running interactively " +
 			"it needs --yes. A signed-out token cannot be used without the device key, and expires on its own " +
-			"within the hour.",
+			"by the authorization's end.",
 		Args: noArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			st, err := a.store()

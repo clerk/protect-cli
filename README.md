@@ -84,9 +84,12 @@ the address `login` printed into the one you do (`--no-browser` prints it withou
 No Labs under Protect in the Dashboard? Protect Labs is in early access; ask your Clerk contact to turn it on
 for that instance.
 
-You get the permissions you have in Protect Labs for that instance, and no more. Access renews automatically
-while you use it — run a command that talks to Protect, such as `clerk-protect whoami`, at least every half
-hour — for up to eight hours from when you opened Protect Labs; after that, run `clerk-protect login` again.
+You get the permissions you have in Protect Labs for that instance, and no more. The server requests access for the
+time remaining in that Labs session, up to eight hours from when you opened it. A token can end earlier;
+`clerk-protect whoami` shows both the token expiry and authorization deadline. The approval page and terminal
+show when the authorization ends. If that is soon, open Labs fresh from the Clerk Dashboard before approving.
+After the authorization ends, run `clerk-protect login` again. A shorter-lived token renews automatically
+while it is still valid; if it expires while this computer is idle, sign in again.
 Signing in again always needs a person at a browser, so a sign-in does not yet suit CI or an agent that runs
 unattended for longer than that.
 
@@ -167,9 +170,12 @@ per command, create the key with `CLERK_PROTECT_KEY_PROTECTION=presence` before 
 | `tables rows set TABLE ID ...` | Replace a row's values with exactly those given |
 | `tables rows delete TABLE ID` | Delete a row |
 | `insights dimensions\|facets\|timeseries\|search\|events` | Investigate decisions. `--since`, `--from`/`--to`, `--filter dim=v1,v2`, `--exclude`, `--expression`, or `--query`/`--file` with a JSON body |
+| `insights fields` | Expression fields and compatible rule-path aliases, including fields that are not facet dimensions |
 | `insights entity --dimension D --value V` | Profile one value of one dimension over the window |
 | `insights flow --decision-id ID --at TIME` | Every decision in the flow one decision belonged to |
 | `insights validate-filter 'expression'` | Check a filter expression |
+| `investigate "question"` | Ask about this instance's decisions in plain language; see [Asking questions](#asking-questions-in-plain-language) |
+| `investigate schema` | The tables and columns you can ask about |
 | `trace [--filter field=value] [--columns a,b]` | Stream decisions live. In a terminal, an interactive view: pause and scroll back, open a decision, filter, choose columns (`?` for the keys). Piped, or with `--json` or `--no-tui`, one line per decision. Filters: `field=value`, `field!=value` and `field~text` ignore case; `field==value` is exact |
 | `console open [--path /rules] [--no-sign-in] [--no-browser]` | Open Protect Labs in your browser, signed in as this computer's sign-in for the selected instance. The browser session ends when this computer's sign-in would, and cannot approve another computer's sign-in. `--no-browser` prints the address without signing in |
 | `matches [--protection P] [--rule-id R] [--since 7d]` | How often protections or rules matched, as sparklines |
@@ -180,6 +186,67 @@ Every command accepts `--json` for machine-readable output.
 
 In a terminal, output is in colour. `--color auto|always|never` chooses (`auto`, the default, colours only a terminal), and `NO_COLOR` or `TERM=dumb` turn it off. `--json` output is never coloured, and neither is anything piped unless you ask with `--color always`.
 
+## Searching decisions
+
+`insights search --limit 1000` follows pages and returns up to 1,000 rows in one JSON response.
+The default is 100 rows; each request asks for at most 500. The response's `next_cursor` continues
+after the last returned row, and its `window` holds the absolute `from` and `to` that were searched,
+even when the search started from `--since`. Continue with `--cursor` plus that window's `--from`
+and `--to` and the same filters; when rows remain, the exact flags are also printed to stderr.
+Rerunning `--since` later would start the window later and skip its oldest rows. A failed page prints no partial result. Buffered server responses must total less than
+64 MiB; use smaller limits and continue with the cursor for larger exports. Formatting can make
+the printed JSON larger.
+
+`--filter` uses dimension names from `insights dimensions`. `--expression` accepts column names
+and compatible rule paths: `asn_type == "hosting"` and `ip.asn.type == "hosting"` ask the same
+question. `insights fields` lists those aliases when the server publishes them. A field whose
+historical values differ from its rule values has no alias; check `schema` before turning a
+historical filter into a rule. A field such as `flow_id` can be filtered even though it is not a
+facet dimension.
+
+```bash
+clerk-protect insights fields
+clerk-protect insights search --since 24h --limit 1000 \
+  --expression 'ip.asn.type == "hosting"'
+clerk-protect insights search --since 24h --flow-id sua_example
+```
+
+`--flow-id` also works on `insights facets` and `insights timeseries`, and combines with
+`--expression` and `--filter`. It selects decisions belonging to that sign-in or sign-up;
+it requires the decisions unit. Insights decisions currently have 14 days of retained history.
+Increasing the search limit or window cannot recover decisions outside that history.
+
+## Asking questions in plain language
+
+`investigate` takes a question about this instance's decisions in plain language, works out the query,
+checks it, runs it against **this instance's decisions only**, and streams the result back:
+
+```bash
+clerk-protect investigate schema                       # what you can ask about
+clerk-protect investigate \
+  --purpose "find what drove yesterday's blocked sign-ups" \
+  --shape "one row per country with the blocked count, top 10" \
+  "Which countries had the most blocked sign-ups yesterday?"
+```
+
+- **Be specific:** a time window, the flow (sign-in, sign-up, ...), the outcome, the grouping, and "top N".
+- **Output:** progress, the query and a short summary go to stderr; the rows go to stdout as a table, or as
+  `--format csv` (cells a spreadsheet would read as formulas are defused) or `--format json` (one JSON array
+  per row). `--json` prints every event of the stream as one JSON line instead.
+- **When more is needed:** in a terminal, `investigate` asks the questions and sends the request again with
+  your answers. Otherwise, or with `--no-interactive`, it prints them and the request id and exits `5`. Send
+  the same question again with `--prior-request <id>` and one `--context "Q: … A: …"` per answer.
+- **Declined:** Protect can decline a question that isn't about this instance's decisions; the command
+  exits `4` with the reason.
+- **What is recorded:** each request is recorded with who asked, the question, `--purpose`, and, when
+  given, `--justification` and `--investigating` (a ticket or case reference). A request an AI agent makes
+  is recorded as made by one. That is detected from `AI_AGENT`, `CLERK_PROTECT_AGENT` or `CLAUDECODE`, or set
+  with `--agent <name>`.
+- **Agents:** an AI agent using `investigate` should ask you for the purpose, and any justification or
+  reference, rather than write them itself, because they are recorded as yours.
+- **Availability:** not every instance has it yet. Where it isn't available, the command says so.
+- **Permissions:** it needs the permissions that let you run replays in Protect Labs.
+
 ## Scripts and automation
 
 - **Changes need confirmation.** A command that changes your configuration — creating, updating, enabling,
@@ -187,12 +254,15 @@ In a terminal, output is in colour. `--color auto|always|never` chooses (`auto`,
   does `logout --all`. When standard input is not a terminal it does not ask: it refuses unless you pass
   `--yes`, before sending anything. `profile` commands, and `logout` for one instance, change only this
   computer and do not ask.
-- **Renewal.** Access renews on the next request once half of a token's hour has passed. Run a command
-  that talks to Protect (`whoami`, say — not `profile`, `keys status`, or `console open` with `--no-sign-in`
-  or `--no-browser`, which never use this computer's sign-in) at least every half hour to stay signed in
-  until the authorization ends; `trace` renews on its own while it runs.
+- **Lifetime and renewal.** An idle computer can resume while its token is valid, up to the original
+  authorization deadline. A shorter token renews on the next request once half its lifetime has
+  passed, while it is still valid; `trace` reconnects before that token expires. If the token or
+  authorization expires, sign in again. Renewal always keeps the original authorization end time.
+  `profile`, `keys status`, and `console open --no-sign-in` or `--no-browser` never renew a token;
+  use a command that talks to Protect, such as `whoami`, when a shorter token needs renewal.
 - **Exit codes:** `0` success, `1` failure (including an invalid rule from `rules validate`), `2` a mistake
-  in the command, `3` sign in again with `clerk-protect login`.
+  in the command, `3` sign in again with `clerk-protect login`, `4` an investigation was declined, `5` an
+  investigation needs more information.
 - `CLERK_PROTECT_PROFILE` selects a profile, as `--profile` does. `CLERK_PROTECT_API_URL` points at another
   deployment, as `--api-url` does, and wins over a profile's API URL.
 - `CLERK_PROTECT_CONFIG_DIR` moves everything this tool stores, profiles included.
