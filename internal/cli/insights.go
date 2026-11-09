@@ -236,7 +236,8 @@ are retained for 14 days. Search follows pages to satisfy --limit.
 Use --filter for dimension names from 'insights dimensions'. Expressions accept
 column names and compatible rule paths, e.g. ip.asn.type == "hosting".
 'insights fields' lists expression fields and their available aliases.
-Use --flow-id to find decisions belonging to one sign-in or sign-up.`,
+Use --flow-id to find decisions belonging to one sign-in or sign-up.
+Use 'insights trace-id' to find the decision behind a blocked screen's reference.`,
 	}
 	cmd.AddCommand(
 		a.insightsDimensionsCmd(),
@@ -286,6 +287,7 @@ Use --flow-id to find decisions belonging to one sign-in or sign-up.`,
 		}),
 		a.insightsPostCmd("events", "events", "Configuration changes in a window", nil, nil),
 		a.insightsFlowCmd(),
+		a.insightsTraceIDCmd(),
 		a.insightsValidateFilterCmd(),
 	)
 	return cmd
