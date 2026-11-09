@@ -173,6 +173,7 @@ per command, create the key with `CLERK_PROTECT_KEY_PROTECTION=presence` before 
 | `insights fields` | Expression fields and compatible rule-path aliases, including fields that are not facet dimensions |
 | `insights entity --dimension D --value V` | Profile one value of one dimension over the window |
 | `insights flow --decision-id ID --at TIME` | Every decision in the flow one decision belonged to |
+| `insights trace-id REFERENCE` | The decision behind the reference a blocked person is shown (e.g. `7Q8ikxgt`): when, which rule, from where. Searches all 14 days kept unless `--window-hours` narrows it |
 | `insights validate-filter 'expression'` | Check a filter expression |
 | `investigate "question"` | Ask about this instance's decisions in plain language; see [Asking questions](#asking-questions-in-plain-language) |
 | `investigate schema` | The tables and columns you can ask about |
