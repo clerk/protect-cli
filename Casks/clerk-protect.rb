@@ -5,9 +5,9 @@
 cask "clerk-protect" do
   arch arm: "arm64", intel: "amd64"
 
-  version "0.5.0"
-  sha256 arm:   "c693c1a733b134f96c83d9eacbfb3e9fedd762c5c3b860db7a7658dd755d671b",
-         intel: "412776c3c7109cd5b59b7d0962cb3dbab92ceb9301056fb5540d87b14f1c5701"
+  version "0.6.0"
+  sha256 arm:   "ec9bcb56caf9ec1dce9712ee452969f46a66afda603fff7fabae54577ff34c0f",
+         intel: "15a1730cbc3e9b179a83703837855588d4a5da3bedb97028bdd65ee84c6bc7d9"
 
   url "https://github.com/clerk/protect-cli/releases/download/v#{version}/clerk-protect-v#{version}-darwin-#{arch}.pkg"
   name "Clerk Protect CLI"
