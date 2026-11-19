@@ -19,6 +19,9 @@ import (
 )
 
 func TestGenerate_writesAPrivateFileAndRefusesToOverwrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("an extractable key file is refused on Windows (TestGenerate_refusesAKeyFileOnWindows)")
+	}
 	path := filepath.Join(t.TempDir(), "keys", "ci.pem")
 	key, err := Generate(path)
 	if err != nil {
