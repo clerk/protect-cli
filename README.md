@@ -145,13 +145,13 @@ per command, create the key with `CLERK_PROTECT_KEY_PROTECTION=presence` before 
 | `keys list` | The computers signed in as you, with each key's fingerprint and when its sign-in ends. `*` marks this one |
 | `profile list\|show\|set\|use\|delete` | Name the instance, and API URL, commands use by default — see [Profiles](#profiles) |
 | `rulesets list` | The rulesets rules can be written into |
-| `rules list [--ruleset R]` | Rules in evaluation order |
+| `rules list [--ruleset R]` | Rules in stored order. Within a ruleset they can run in a different order: block rules before challenge rules, then lower `priority` first, then stored order |
 | `rules get ID --ruleset R` | One rule |
 | `rules create --ruleset R --expression E --action block\|challenge` | Create a rule. Also `--description`, `--rate-limit-*`, `--challenge-*`, `--expires-at`/`--expires-in`, or `--file rule.json` |
-| `rules update ID --ruleset R [flags]` | Change only what the flags name; `--file` replaces the whole rule |
+| `rules update ID --ruleset R [flags]` | Change only what the flags name; `--file` replaces the rule body, clearing optional fields it leaves out. Giving any `--rate-limit-*` flag replaces the whole rate limit, and any `--challenge-*` flag the whole challenge setting; a rate limit with parts no flag sets needs `--file` |
 | `rules enable\|disable ID --ruleset R` | Turn a rule on or off without deleting it |
 | `rules delete ID --ruleset R` | Delete a rule |
-| `rules reorder --ruleset R --move ID --top\|--bottom\|--to N\|--before ID\|--after ID` | Change evaluation order (or give every id in order); `--dry-run` to preview |
+| `rules reorder --ruleset R --move ID --top\|--bottom\|--to N\|--before ID\|--after ID` | Change stored order (or give every id in order); `--dry-run` to preview. Stored order decides between rules with the same action and priority |
 | `rules validate --ruleset R 'expression'` | Ask whether a rule is valid, without creating it. Exits 1 when it is not |
 | `schema [event-type]`, `fields` | The fields rules can use |
 | `protections list`, `protections show NAME` | Protections and their settings on this instance |
@@ -248,6 +248,125 @@ clerk-protect investigate \
 - **Availability:** not every instance has it yet. Where it isn't available, the command says so.
 - **Permissions:** it needs the permissions that let you run replays in Protect Labs.
 
+## Servers and CI: machine keys
+
+`clerk-protect login` signs in a person, on a computer with a browser, for up to eight hours. For a
+server, a CI job or other automation, use a **machine key**: a key pair an administrator of your
+instance approves once, which then works on its own until it is revoked or its approval ends (at most a
+year).
+
+There are three kinds of machine key. Pick by where the private key should live:
+
+| Kind | Where the private key lives | Use it for |
+|---|---|---|
+| **Cloud KMS** — `kms-aws:` or `kms-gcp:` | Inside AWS KMS or Google Cloud KMS. It never leaves, not even to this program | Servers in AWS or Google Cloud. Nothing secret to distribute: the server's own cloud identity is what may use the key |
+| **Hardware** — `machine-key create --non-extractable` | This computer's Secure Enclave (macOS) or TPM / Windows key storage | One fixed machine, such as a self-hosted runner |
+| **File** — `machine-key create --out` | A PEM file you keep in your secret storage | Anywhere else. Whoever can read the file can use the key |
+
+```sh
+# 1. Create a key pair — a file for your secret storage …
+clerk-protect machine-key create --out ./ci-key.pem
+#    … or a key that can never leave this computer (macOS and Windows only)
+clerk-protect machine-key create --non-extractable --name ci
+#    … or create a key in your cloud's KMS (see "Keys in a cloud KMS" below)
+
+# 2. Register it, signed in as yourself
+clerk-protect login
+clerk-protect machine-key register --key ./ci-key.pem --name "CI deploys"
+clerk-protect machine-key register --key kms-aws:alias/clerk-protect --name "Prod workers"
+```
+
+3. An administrator of the instance (an Owner or Admin in the Clerk Dashboard) opens Protect Labs →
+   **Command-line access**, checks the key value against the one `register` printed, ticks what the key
+   may do, chooses how long the approval lasts, and approves.
+4. Give each server the key's **source** and run commands as usual:
+
+```sh
+CLERK_PROTECT_MACHINE_KEY=aws-ssm:/prod/clerk-protect/key clerk-protect rules list
+clerk-protect --machine-key env:CLERK_PROTECT_KEY_PEM machine-key test
+```
+
+| Source | Reads the key from |
+|---|---|
+| `file:/path/key.pem` (or a bare path) | a file |
+| `env:VAR` | an environment variable holding the PEM (newlines may be written `\n`, or the PEM base64-encoded) |
+| `exec:/path/to/command args` | the standard output of a command, run without a shell |
+| `keystore:NAME` | a `--non-extractable` key made on this computer |
+| `kms-aws:KEY` | a key in AWS KMS — key id, key ARN, `alias/NAME` or alias ARN — through the `aws` CLI |
+| `kms-gcp:projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V` | a key version in Google Cloud KMS, through `gcloud` |
+| `aws-ssm:/parameter/name` | AWS Systems Manager Parameter Store, through the `aws` CLI |
+| `gcp-secret:projects/P/secrets/S[/versions/V]` | Google Cloud Secret Manager, through `gcloud` |
+| `vault:path#field` | HashiCorp Vault KV, through `vault` |
+| `op://vault/item/field` | 1Password, through `op` |
+
+The store shorthands run that store's own command-line tool, which must be installed and signed in with
+the server's identity (an instance role, a workload identity, a service-account token). Every store can
+also deliver the key as a file or an environment variable, which `file:` and `env:` read directly.
+
+- **Each run makes its own session key.** At the start of every command, the CLI generates a fresh key in
+  memory. The machine key signs **once**, asking for a five-minute token bound to that session key, and
+  every request after is signed by the session key. When the command exits, the session key is gone.
+  Nothing is written to disk, and a KMS or hardware key is used once per command however many requests
+  the command makes.
+- **Revoking the key in Protect Labs stops every copy of it within five minutes.** `machine-key list`
+  shows each key's state, scopes, end and last use.
+- **A machine key acts for the instance, not for a person.** Its actions are recorded as the key, and
+  it cannot register keys, sign a browser in, or approve anything.
+- **An extractable key file is the credential.** Keep it in secret storage, not in a repository. The CLI
+  warns when a key file is readable by other accounts, and does not write one on Windows.
+
+### Keys in a cloud KMS
+
+The private key is generated inside the KMS and never leaves it. The server needs permission to ask the
+KMS for a signature — which it gets from the cloud identity it already runs as — and nothing else.
+Every signature appears in the cloud's own audit log (CloudTrail, Cloud Audit Logs). You can stop a key
+two ways: revoke it in Protect Labs, or take away the server's permission to sign with it.
+
+**AWS KMS.** The key must be an asymmetric signing key on the P-256 curve:
+
+```sh
+aws kms create-key --key-spec ECC_NIST_P256 --key-usage SIGN_VERIFY --description "clerk-protect"
+aws kms create-alias --alias-name alias/clerk-protect --target-key-id <key id>
+```
+
+Registering proves you hold the key by signing with it, so the identity that runs `machine-key register`
+needs the same two permissions as each server: `kms:GetPublicKey` and `kms:Sign` on the key, for
+example:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["kms:GetPublicKey", "kms:Sign"],
+  "Resource": "arn:aws:kms:us-east-1:111122223333:key/<key id>"
+}
+```
+
+```sh
+CLERK_PROTECT_MACHINE_KEY=kms-aws:alias/clerk-protect clerk-protect rules list
+```
+
+**Google Cloud KMS.** The key version must use the `EC_SIGN_P256_SHA256` algorithm; choose the HSM
+protection level if you want the key held in a hardware security module:
+
+```sh
+gcloud kms keyrings create clerk-protect --location global
+gcloud kms keys create machine --keyring clerk-protect --location global \
+  --purpose asymmetric-signing --default-algorithm ec-sign-p256-sha256 --protection-level hsm
+```
+
+Registering signs with the key to prove you hold it, so the identity that runs `machine-key register`
+and each server both need `roles/cloudkms.signerVerifier` on the key (or `roles/cloudkms.signer` plus
+`roles/cloudkms.publicKeyViewer`).
+
+```sh
+CLERK_PROTECT_MACHINE_KEY=kms-gcp:projects/my-project/locations/global/keyRings/clerk-protect/cryptoKeys/machine/cryptoKeyVersions/1 \
+  clerk-protect rules list
+```
+
+A new key version, or a new AWS key, has a new public key: register it and have it approved, then
+revoke the old one. The `aws` or `gcloud` CLI must be installed and signed in on the server; the CLI runs
+it to read the public key and to sign, and links no cloud SDK of its own.
+
 ## Scripts and automation
 
 - **Changes need confirmation.** A command that changes your configuration — creating, updating, enabling,
@@ -267,3 +386,5 @@ clerk-protect investigate \
 - `CLERK_PROTECT_PROFILE` selects a profile, as `--profile` does. `CLERK_PROTECT_API_URL` points at another
   deployment, as `--api-url` does, and wins over a profile's API URL.
 - `CLERK_PROTECT_CONFIG_DIR` moves everything this tool stores, profiles included.
+- `CLERK_PROTECT_MACHINE_KEY` (or `--machine-key`) makes every command act as an approved machine key
+  instead of your sign-in; see [Servers and CI](#servers-and-ci-machine-keys).

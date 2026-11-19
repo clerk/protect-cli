@@ -66,6 +66,10 @@ type Response struct {
 }
 
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte, accept string) (*http.Request, error) {
+	return c.requestWith(ctx, method, path, query, body, accept, nil)
+}
+
+func (c *Client) requestWith(ctx context.Context, method, path string, query url.Values, body []byte, accept string, extra map[string]string) (*http.Request, error) {
 	if !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("api: path %q must be absolute", path)
 	}
@@ -105,6 +109,13 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	if c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
 	}
+	for k, v := range extra {
+		// Never the credential's own headers: those are this client's to set.
+		if k == "Authorization" || k == "DPoP" {
+			return nil, fmt.Errorf("api: header %s is set by the client", k)
+		}
+		req.Header.Set(k, v)
+	}
 	return req, nil
 }
 
@@ -139,11 +150,17 @@ func (c *Client) httpClient() *http.Client {
 
 // Do sends a request and buffers the response.
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, in any) (*Response, error) {
+	return c.DoWith(ctx, method, path, query, in, nil)
+}
+
+// DoWith is Do with extra request headers — a second proof, say, signed by a
+// key other than the one the token is bound to.
+func (c *Client) DoWith(ctx context.Context, method, path string, query url.Values, in any, headers map[string]string) (*Response, error) {
 	body, err := encode(in)
 	if err != nil {
 		return nil, err
 	}
-	req, err := c.request(ctx, method, path, query, body, "application/json")
+	req, err := c.requestWith(ctx, method, path, query, body, "application/json", headers)
 	if err != nil {
 		return nil, err
 	}

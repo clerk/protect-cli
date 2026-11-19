@@ -41,7 +41,7 @@ type traceMsg struct {
 // through here, or a signal that ends the context — because a terminal left in
 // raw mode, on the alternate screen with no cursor, is unusable until it is
 // reset by hand.
-func (a *app) runTraceView(ctx context.Context, in, out *os.File, c *api.Client, session *auth.Session, opts traceview.Options) error {
+func (a *app) runTraceView(ctx context.Context, in, out *os.File, c *api.Client, session auth.Reconnector, opts traceview.Options) error {
 	if w, h, err := term.Size(out.Fd()); err != nil || w <= 0 || h <= 0 {
 		return errNoTraceView
 	}
@@ -157,7 +157,7 @@ func (a *app) runTraceView(ctx context.Context, in, out *os.File, c *api.Client,
 }
 
 // feedTraceView runs one stream and tells the view what it carries.
-func (a *app) feedTraceView(ctx context.Context, gen int, c *api.Client, session *auth.Session, msgs chan<- traceMsg) {
+func (a *app) feedTraceView(ctx context.Context, gen int, c *api.Client, session auth.Reconnector, msgs chan<- traceMsg) {
 	send := func(m traceMsg) {
 		m.gen = gen
 		select {

@@ -282,7 +282,7 @@ Use 'insights trace-id' to find the decision behind a blocked screen's reference
 			}
 			return nil
 		}, func(cmd *cobra.Command) {
-			cmd.Flags().String("dimension", "", "The dimension, e.g. ip")
+			cmd.Flags().String("dimension", "", "The dimension, e.g. source_ip")
 			cmd.Flags().String("value", "", "The value of that dimension to profile")
 		}),
 		a.insightsPostCmd("events", "events", "Configuration changes in a window", nil, nil),
