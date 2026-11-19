@@ -110,6 +110,16 @@ type claims struct {
 	HTU string `json:"htu"`
 	IAT int64  `json:"iat"`
 	ATH string `json:"ath,omitempty"`
+	// TargetJKT names the key a machine-key mint should bind its token to
+	// instead of the signing key: the run's in-memory session key.
+	TargetJKT string `json:"target_jkt,omitempty"`
+}
+
+// MessageSigner is a key that signs a whole message and hashes it itself — a
+// cloud KMS reached through a tool that takes data, not a digest. The builder
+// uses it in preference to crypto.Signer when a key offers both.
+type MessageSigner interface {
+	SignMessage(message []byte) (der []byte, err error)
 }
 
 // Proof builds a proof for one request.
@@ -122,6 +132,20 @@ type claims struct {
 // Every proof gets a fresh random jti. The server keeps a replay cache, and a
 // proof without a jti would skip it.
 func (b *Builder) Proof(htm, htu, accessToken string) (string, error) {
+	return b.proof(htm, htu, accessToken, "")
+}
+
+// MintProof builds the proof a machine key signs to ask for a token bound to
+// another key — targetJKT, the thumbprint of this run's session key. Signed by
+// the machine key, so the binding cannot be swapped by whoever relays it.
+func (b *Builder) MintProof(htm, htu, targetJKT string) (string, error) {
+	if targetJKT == "" {
+		return "", errors.New("dpop: a mint proof needs a target key")
+	}
+	return b.proof(htm, htu, "", targetJKT)
+}
+
+func (b *Builder) proof(htm, htu, accessToken, targetJKT string) (string, error) {
 	var jti [16]byte
 	if _, err := rand.Read(jti[:]); err != nil {
 		return "", fmt.Errorf("dpop: generate jti: %w", err)
@@ -130,7 +154,7 @@ func (b *Builder) Proof(htm, htu, accessToken string) (string, error) {
 	if b.Now != nil {
 		now = b.Now
 	}
-	c := claims{JTI: b64.EncodeToString(jti[:]), HTM: htm, HTU: htu, IAT: now().Unix()}
+	c := claims{JTI: b64.EncodeToString(jti[:]), HTM: htm, HTU: htu, IAT: now().Unix(), TargetJKT: targetJKT}
 	if accessToken != "" {
 		sum := sha256.Sum256([]byte(accessToken))
 		c.ATH = b64.EncodeToString(sum[:])
@@ -140,8 +164,13 @@ func (b *Builder) Proof(htm, htu, accessToken string) (string, error) {
 		return "", err
 	}
 	signingInput := b64.EncodeToString(b.header) + "." + b64.EncodeToString(body)
-	digest := sha256.Sum256([]byte(signingInput))
-	der, err := b.signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	var der []byte
+	if ms, ok := b.signer.(MessageSigner); ok {
+		der, err = ms.SignMessage([]byte(signingInput))
+	} else {
+		digest := sha256.Sum256([]byte(signingInput))
+		der, err = b.signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	}
 	if err != nil {
 		return "", fmt.Errorf("dpop: sign proof: %w", err)
 	}

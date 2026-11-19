@@ -88,7 +88,7 @@ type traceSink struct {
 // stream is closed from this side a little before expiry, and the request
 // reopening it renews — see traceDeadline. Both the line output and the
 // interactive view run this one loop.
-func (a *app) streamTrace(ctx context.Context, c *api.Client, session *auth.Session, sink traceSink) (string, error) {
+func (a *app) streamTrace(ctx context.Context, c *api.Client, session auth.Reconnector, sink traceSink) (string, error) {
 	quickCloses := 0
 	for {
 		// Renew now if the token is due, so the deadline below belongs to the
@@ -249,7 +249,7 @@ func (a *app) traceCmd() *cobra.Command {
 			if len(show) == 0 {
 				show = info.Defaults
 			}
-			session, _ := c.Tokens.(*auth.Session)
+			session, _ := c.Tokens.(auth.Reconnector)
 
 			if in, out := a.traceTTY(); !noTUI && !a.jsonOut && a.isTerminal() && term.IsTerminal(out.Fd()) {
 				err := a.runTraceView(ctx, in, out, c, session, traceview.Options{
@@ -287,7 +287,7 @@ func fieldFilters(want map[string]string) []traceview.Filter {
 }
 
 // traceLines prints the stream as lines: one per decision.
-func (a *app) traceLines(ctx context.Context, c *api.Client, session *auth.Session, show []string, want map[string]string, filters []traceview.Filter) error {
+func (a *app) traceLines(ctx context.Context, c *api.Client, session auth.Reconnector, show []string, want map[string]string, filters []traceview.Filter) error {
 	announced := false
 	reason, err := a.streamTrace(ctx, c, session, traceSink{
 		decision: func(data string) {

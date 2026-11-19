@@ -182,8 +182,11 @@ func (a *app) whoamiCmd() *cobra.Command {
 			if err := client.JSON(ctxOf(cmd), http.MethodGet, api.Path("me"), nil, nil, &me); err != nil {
 				return err
 			}
-			info, err := keystore.Status()
-			if err != nil {
+			var info keystore.Info
+			if a.machineKeySpec() != "" {
+				// Acting as a machine key: report that key, not this computer's.
+				info = keystore.Info{Exists: true, Backend: "machine-key", Thumbprint: creds.KeyThumbprint}
+			} else if info, err = keystore.Status(); err != nil {
 				return err
 			}
 			if a.jsonOut {
@@ -218,7 +221,11 @@ func (a *app) whoamiCmd() *cobra.Command {
 			row("Permissions", strings.Join(scopes, ", "))
 			row("Token expires", str("expires_at"))
 			row("Authorization expires", creds.AuthorizationExpiresAt.UTC().Format(time.RFC3339))
-			row("Device key", string(info.Backend)+" (fingerprint "+dpop.Fingerprint(info.Thumbprint)+")")
+			if a.machineKeySpec() != "" {
+				row("Machine key", "fingerprint "+dpop.Fingerprint(info.Thumbprint))
+			} else {
+				row("Device key", string(info.Backend)+" (fingerprint "+dpop.Fingerprint(info.Thumbprint)+")")
+			}
 			row("API", client.Base)
 			return tw.Flush()
 		},

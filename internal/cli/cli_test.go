@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -471,6 +472,207 @@ func TestCommands_invalidRuleExitsOne(t *testing.T) {
 	code, out, _ := f.run(t, "rules", "validate", "--ruleset", "SIGN_IN", "nope == 1")
 	if code != ExitError || !strings.Contains(out, "unknown field nope") {
 		t.Fatalf("code %d out %s", code, out)
+	}
+}
+
+// A flag update sends the whole rule back, and the server clears whatever the
+// body leaves out. Fields no flag can change (priority, blockMessage, and rate
+// limit parts such as limitExpression) have to survive an update that changes
+// something else. Priority 0 is a real priority, the first to run, so it must
+// be sent back as 0 and not dropped as empty.
+func TestCommands_flagUpdateKeepsTheStoredBody(t *testing.T) {
+	const rest = `"id":"r1","description":"old","expression":"true","action":"CHALLENGE",` +
+		`"blockMessage":"Not now","expiresAt":"2030-01-01T00:00:00Z",` +
+		`"rateLimit":{"keys":["ip.address"],"window":"PT1H","limit":5,"limitExpression":"10"},` +
+		`"challenge":{"type":"turnstile"}`
+	for _, tc := range []struct {
+		name     string
+		priority string // the stored rule's "priority" member, or "" for none
+	}{
+		{"priority 10", `,"priority":10`},
+		{"priority 0", `,"priority":0`},
+		{"priority 1000", `,"priority":1000`},
+		{"no priority", ``},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.signIn(t)
+			stored := `{` + rest + tc.priority + `}`
+			f.mux.HandleFunc("GET /labs/api/rulesets/SIGN_IN/rules/r1", func(w http.ResponseWriter, _ *http.Request) {
+				f.json(w, 200, stored)
+			})
+			f.mux.HandleFunc("PUT /labs/api/rulesets/SIGN_IN/rules/r1", func(w http.ResponseWriter, r *http.Request) {
+				f.record(r)
+				f.json(w, 200, stored)
+			})
+
+			code, _, errOut := f.run(t, "--yes", "rules", "update", "r1", "--ruleset", "SIGN_IN", "--description", "new")
+			if code != ExitOK {
+				t.Fatalf("code %d err %s", code, errOut)
+			}
+			sent := f.posts["PUT /labs/api/rulesets/SIGN_IN/rules/r1"]
+			var got, want map[string]json.RawMessage
+			if err := json.Unmarshal(sent, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(stored), &want); err != nil {
+				t.Fatal(err)
+			}
+			if string(got["description"]) != `"new"` {
+				t.Fatalf("update body %s: the description was not changed", sent)
+			}
+			for _, k := range []string{"expression", "action", "blockMessage", "expiresAt", "rateLimit", "challenge", "priority"} {
+				if !jsonEqual(t, got[k], want[k]) {
+					t.Errorf("update body %s: %s is %s, want the stored %s", sent, k, got[k], want[k])
+				}
+			}
+		})
+	}
+}
+
+// With --file the file is the rule body, sent as written: a priority in the
+// file reaches the server, and a file without one clears it.
+func TestCommands_fileUpdateSendsThePriorityAsWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name, file string
+		want       string // the sent "priority", or "" for absent
+	}{
+		{"with priority", `{"expression":"true","action":"CHALLENGE","priority":0}`, "0"},
+		{"without priority", `{"expression":"true","action":"CHALLENGE"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.signIn(t)
+			f.mux.HandleFunc("PUT /labs/api/rulesets/SIGN_IN/rules/r1", func(w http.ResponseWriter, r *http.Request) {
+				f.record(r)
+				f.json(w, 200, `{"id":"r1","expression":"true","action":"CHALLENGE"}`)
+			})
+			file := filepath.Join(t.TempDir(), "rule.json")
+			if err := os.WriteFile(file, []byte(tc.file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			code, _, errOut := f.run(t, "--yes", "rules", "update", "r1", "--ruleset", "SIGN_IN", "--file", file)
+			if code != ExitOK {
+				t.Fatalf("code %d err %s", code, errOut)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(f.posts["PUT /labs/api/rulesets/SIGN_IN/rules/r1"], &got); err != nil {
+				t.Fatal(err)
+			}
+			if string(got["priority"]) != tc.want {
+				t.Fatalf("sent priority %q, want %q", got["priority"], tc.want)
+			}
+		})
+	}
+}
+
+// jsonEqual compares two JSON values by meaning, so key order and number
+// spelling (the CLI round-trips the stored rule through Go values) don't matter.
+// Two absent values are equal.
+func jsonEqual(t *testing.T, a, b json.RawMessage) bool {
+	t.Helper()
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == len(b)
+	}
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		t.Fatal(err)
+	}
+	return reflect.DeepEqual(av, bv)
+}
+
+// The list is in stored order, and a priority is one of the two things that can
+// make a rule run somewhere else, so the human output has to show it.
+func TestCommands_humanRuleOutputShowsAStoredPriority(t *testing.T) {
+	f := newFakeAPI(t)
+	f.signIn(t)
+	f.mux.HandleFunc("GET /labs/api/rulesets/SIGN_UP/rules", func(w http.ResponseWriter, _ *http.Request) {
+		f.json(w, 200, `{"rules":[`+
+			`{"id":"r1","expression":"true","action":"CHALLENGE"},`+
+			`{"id":"r2","expression":"true","action":"CHALLENGE","priority":0}],"nextPageToken":null}`)
+	})
+	f.mux.HandleFunc("GET /labs/api/rulesets/SIGN_UP/rules/r2", func(w http.ResponseWriter, _ *http.Request) {
+		f.json(w, 200, `{"id":"r2","expression":"true","action":"CHALLENGE","priority":0}`)
+	})
+
+	code, out, errOut := f.run(t, "rules", "list", "--ruleset", "SIGN_UP")
+	if code != ExitOK {
+		t.Fatalf("rules list: code %d err %s", code, errOut)
+	}
+	// Zero is a real priority (the lowest, so the first to run), not an absent
+	// one. r1 is listed first and has none, so the line belongs under r2 only.
+	r1, r2, found := strings.Cut(out, "#2")
+	if !found || strings.Contains(r1, "priority:") || strings.Count(r2, "priority: 0") != 1 {
+		t.Fatalf("rules list should show `priority: 0` once, under r2 and not r1:\n%s", out)
+	}
+
+	code, out, errOut = f.run(t, "rules", "get", "r2", "--ruleset", "SIGN_UP")
+	if code != ExitOK || !strings.Contains(out, "priority: 0") {
+		t.Fatalf("rules get: code %d out %s err %s", code, out, errOut)
+	}
+}
+
+// The listed order is the stored order. A rule's action and priority decide
+// what runs first before stored order does, and the help must not say otherwise.
+func TestCommands_ruleHelpDoesNotCallStoredOrderEvaluationOrder(t *testing.T) {
+	f := newFakeAPI(t)
+	for _, args := range [][]string{{"rules", "--help"}, {"rules", "list", "--help"}, {"rules", "reorder", "--help"}} {
+		code, out, errOut := f.run(t, args...)
+		if code != ExitOK {
+			t.Fatalf("%v: code %d err %s", args, code, errOut)
+		}
+		for _, wrong := range []string{"in evaluation order", "top-down", "order rules are evaluated in"} {
+			if strings.Contains(out, wrong) {
+				t.Errorf("%v still says %q:\n%s", args, wrong, out)
+			}
+		}
+	}
+	for _, args := range [][]string{{"rules", "list", "--help"}, {"rules", "reorder", "--help"}} {
+		_, out, _ := f.run(t, args...)
+		for _, want := range []string{"stored order", "priority"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v does not mention %q:\n%s", args, want, out)
+			}
+		}
+	}
+}
+
+// The rate-limit flags are one setting and so are the challenge flags: giving
+// any of them replaces the stored one. The help has to say so, because the
+// rest of `rules update` keeps what a flag does not name.
+func TestCommands_updateHelpSaysGroupedFlagsReplaceTheWholeSetting(t *testing.T) {
+	f := newFakeAPI(t)
+	code, out, errOut := f.run(t, "rules", "update", "--help")
+	if code != ExitOK {
+		t.Fatalf("code %d err %s", code, errOut)
+	}
+	for _, want := range []string{"whole rate limit", "whole challenge", "no flag sets", "optional fields"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rules update --help does not mention %q:\n%s", want, out)
+		}
+	}
+	// A file without an expression is refused and one without an action gets
+	// the default, so "anything it leaves out is cleared" overstates it.
+	if strings.Contains(out, "anything it leaves out is cleared") {
+		t.Errorf("rules update --help says a file clears everything it leaves out:\n%s", out)
+	}
+}
+
+// The help's example dimension has to be one insights accepts. The server has
+// no "ip" dimension (it is "source_ip"), so copying "e.g. ip" from the help
+// fails with "unknown dimension".
+func TestCommands_entityHelpNamesARealDimension(t *testing.T) {
+	f := newFakeAPI(t)
+	code, out, errOut := f.run(t, "insights", "entity", "--help")
+	if code != ExitOK {
+		t.Fatalf("code %d err %s", code, errOut)
+	}
+	if strings.Contains(out, "e.g. ip\n") || !strings.Contains(out, "e.g. source_ip") {
+		t.Fatalf("insights entity --help should give source_ip as the example dimension:\n%s", out)
 	}
 }
 

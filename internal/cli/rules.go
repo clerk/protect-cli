@@ -40,6 +40,9 @@ type rule struct {
 	ExpiresAt   string           `json:"expiresAt,omitempty"`
 	RateLimit   *rateLimit       `json:"rateLimit,omitempty"`
 	Challenge   *challengeConfig `json:"challenge,omitempty"`
+	// Priority is a pointer because 0 is a real priority, the first to run,
+	// and a rule that sets none has no key at all.
+	Priority *int32 `json:"priority,omitempty"`
 }
 
 type rulesPage struct {
@@ -54,9 +57,11 @@ type rulesetInfo struct {
 }
 
 // ruleBodyKeys are the fields a rule write accepts. An update sends back
-// exactly these from the stored rule, because a write REPLACES the rule: a
-// field left out is a field cleared.
-var ruleBodyKeys = []string{"description", "expression", "action", "rateLimit", "challenge", "blockMessage", "expiresAt"}
+// exactly these from the stored rule, because a write REPLACES the rule body:
+// an optional field left out is a field cleared. That holds for the fields no flag can
+// change (blockMessage, priority) as much as for the ones a flag can, so a
+// field the API gains has to be added here or every flag update clears it.
+var ruleBodyKeys = []string{"description", "expression", "action", "rateLimit", "challenge", "blockMessage", "expiresAt", "priority"}
 
 func rulesetNames(ctx context.Context, c *api.Client) ([]rulesetInfo, error) {
 	var resp struct {
@@ -140,8 +145,13 @@ func (a *app) rulesListCmd() *cobra.Command {
 	var ruleset string
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List rules, in evaluation order",
-		Args:  noArgs,
+		Short: "List rules, in stored order",
+		Long: "Lists rules in stored order, the order `rules reorder` changes. Within a ruleset, rules " +
+			"can run in a different order: every block rule runs before every challenge rule, and among " +
+			"rules with the same action a lower priority runs first. Stored order decides between rules " +
+			"with the same action and priority. A rule that sets no priority counts as 100; set one " +
+			"with `priority` in a --file rule body.",
+		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, _, err := a.client()
 			if err != nil {
@@ -228,6 +238,9 @@ func (a *app) renderRule(position int, r rule) {
 	if r.Description != "" {
 		a.printf("      %s %s\n", a.out.Label("description:"), r.Description)
 	}
+	if r.Priority != nil {
+		a.printf("      %s %d\n", a.out.Label("priority:"), *r.Priority)
+	}
 	if rl := r.RateLimit; rl != nil {
 		keys := rl.Keys
 		if len(keys) == 0 && rl.Key != "" {
@@ -302,7 +315,11 @@ func addRuleBodyFlags(cmd *cobra.Command) {
 	f.String("action", "", "Rule action: block or challenge")
 	f.String("description", "", "What the rule is for")
 	f.StringSlice("rate-limit-keys", nil, "Rate-limit key expressions, comma-separated (e.g. ip.address)")
-	f.String("rate-limit-window", "", "Rate-limit window, as an ISO 8601 duration (e.g. PT1H)")
+	// The maximum is enforced by the server; this help text copies it, and
+	// protect-expr's TestMaxRateLimitWindow_CopiesOutsideGoAgree keeps the copy
+	// in step (this module is deliberately dependency-free, so it cannot import
+	// the constant).
+	f.String("rate-limit-window", "", "Rate-limit window, as an ISO 8601 duration, at most PT24H (e.g. PT1H)")
 	f.Int64("rate-limit-limit", 0, "Rate-limit threshold")
 	f.String("rate-limit-identity-key", "", "Count distinct values of this expression instead of events")
 	f.String("challenge-type", "", "For a challenge rule: turnstile or proof_of_transfer")
@@ -471,8 +488,12 @@ func (a *app) rulesUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <rule-id>",
 		Short: "Change a rule",
-		Long: "Changes only what the flags name and keeps the rest of the stored rule. With --file the " +
-			"file is the whole new rule: anything it leaves out is cleared.",
+		Long: "Changes only what the flags name and keeps the rest of the stored rule. The --rate-limit-* " +
+			"flags are one setting, and so are the --challenge-* flags: giving any of them replaces the " +
+			"whole rate limit, or the whole challenge setting, so repeat every part you want to keep. A " +
+			"stored rate limit can also have parts no flag sets; check `rules get --json`, and if it has " +
+			"any, update with --file instead. With --file the file replaces the rule body: optional fields " +
+			"it leaves out are cleared.",
 		Args: exactArgs(1, "a rule id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireRuleset(ruleset); err != nil {

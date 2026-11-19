@@ -19,6 +19,7 @@ import (
 
 	"github.com/clerk/protect-cli/internal/auth"
 	"github.com/clerk/protect-cli/internal/config"
+	"github.com/clerk/protect-cli/internal/machinekey"
 	"github.com/clerk/protect-cli/internal/profile"
 	"github.com/clerk/protect-cli/internal/style"
 	"github.com/clerk/protect-cli/internal/term"
@@ -46,6 +47,10 @@ type app struct {
 	profile  string
 	yes      bool
 	color    string
+	// machineKey is --machine-key: the source of a machine key to act as,
+	// instead of this computer's sign-in. Empty falls back to
+	// CLERK_PROTECT_MACHINE_KEY.
+	machineKey string
 
 	// out colours what goes to stdout and errp what goes to stderr. Each is
 	// decided on its own — a command piped into a file can still colour its
@@ -209,6 +214,7 @@ func (a *app) rootCmd() *cobra.Command {
 	pf.StringVar(&a.apiURL, "api-url", "", "API origin (default "+config.DefaultAPIBase+"; also "+config.EnvAPIURL+", or the profile's)")
 	pf.BoolVarP(&a.yes, "yes", "y", false, "Confirm changes without prompting (required when not running interactively)")
 	pf.StringVar(&a.color, "color", string(style.Auto), "Colour output: auto (only on a terminal, and not when NO_COLOR is set), always or never")
+	pf.StringVar(&a.machineKey, "machine-key", "", "Act as an approved machine key from this source instead of your sign-in (also "+machinekey.EnvMachineKey+"; see `clerk-protect machine-key --help`)")
 
 	root.AddCommand(
 		a.loginCmd(),
@@ -226,6 +232,7 @@ func (a *app) rootCmd() *cobra.Command {
 		a.investigateCmd(),
 		a.traceCmd(),
 		a.consoleCmd(),
+		a.machineKeyCmd(),
 		a.matchesCmd(),
 		a.replayCmd(),
 	)

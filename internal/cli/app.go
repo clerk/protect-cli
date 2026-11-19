@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +21,7 @@ import (
 	"github.com/clerk/protect-cli/internal/config"
 	"github.com/clerk/protect-cli/internal/dpop"
 	"github.com/clerk/protect-cli/internal/keystore"
+	"github.com/clerk/protect-cli/internal/machinekey"
 	"github.com/clerk/protect-cli/internal/profile"
 	"github.com/clerk/protect-cli/internal/style"
 	"github.com/clerk/protect-cli/internal/term"
@@ -108,12 +112,81 @@ func (a *app) store() (auth.Store, error) {
 	return auth.Store{Dir: dir}, nil
 }
 
-// client builds a signed API client for the selected instance.
+// machineKeySpec is the machine key source this run acts as: --machine-key,
+// else CLERK_PROTECT_MACHINE_KEY, else none.
+func (a *app) machineKeySpec() string {
+	if a.machineKey != "" {
+		return a.machineKey
+	}
+	return strings.TrimSpace(a.getenv(machinekey.EnvMachineKey))
+}
+
+// client builds a signed API client: as the machine key when one is
+// configured, otherwise as this computer's sign-in for the selected instance.
+func (a *app) client() (*api.Client, *auth.Credentials, error) {
+	if spec := a.machineKeySpec(); spec != "" {
+		return a.machineClient(context.Background(), spec)
+	}
+	return a.personClient()
+}
+
+// machineClient authenticates as an approved machine key. Nothing is read from
+// or written to the credential store: each run mints its own five-minute
+// token, so a server keeps no credential on disk beyond the key it was given.
+//
+// The instance is the key's own. --instance or a profile's instance is sent
+// for the server to CHECK, never to choose; the instance signed in to last on
+// this computer is a person's default and is ignored.
+func (a *app) machineClient(ctx context.Context, spec string) (*api.Client, *auth.Credentials, error) {
+	sel, err := a.selection()
+	if err != nil {
+		return nil, nil, err
+	}
+	key, err := machinekey.Resolve(ctx, spec)
+	if err != nil {
+		return nil, nil, err
+	}
+	if key.Warning != "" {
+		a.notef("%s %s\n", a.errp.Warn("Warning:"), key.Warning)
+	}
+	mint, err := dpop.NewBuilder(key.Signer)
+	if err != nil {
+		return nil, nil, err
+	}
+	// This run's session key: generated in memory, never written anywhere,
+	// gone when the process exits. The token is bound to it, so the machine
+	// key — a KMS key, a hardware key, a file — signs once, for the mint.
+	sessionKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	proofs, err := dpop.NewBuilder(sessionKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	sessionThumb, err := dpop.Thumbprint(&sessionKey.PublicKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	instance := ""
+	if sel.InstanceSource != instanceFromCurrent {
+		instance = sel.Instance
+	}
+	session := &auth.MachineSession{Base: sel.Base, Mint: mint, Proofs: proofs, Thumbprint: sessionThumb, InstanceID: instance}
+	creds, err := session.Credentials(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &api.Client{Base: sel.Base, Tokens: session, Proofs: proofs, UserAgent: auth.UserAgent}, creds, nil
+}
+
+// personClient builds a signed API client for the selected instance from this
+// computer's sign-in.
 //
 // The stored credential names the device key it was bound to. A token bound to
 // a key this machine no longer holds would be refused on every request with a
 // message about proofs; it is caught here and reported as what it is.
-func (a *app) client() (*api.Client, *auth.Credentials, error) {
+func (a *app) personClient() (*api.Client, *auth.Credentials, error) {
 	sel, err := a.selection()
 	if err != nil {
 		return nil, nil, err

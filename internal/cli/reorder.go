@@ -127,10 +127,14 @@ func (a *app) rulesReorderCmd() *cobra.Command {
 	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "reorder [rule-id...]",
-		Short: "Change the order rules are evaluated in",
-		Long: "Rules run top-down, and the first block or challenge that matches decides. Move one rule " +
-			"with --move and one destination, or give every rule id in the new order. Reordering keeps rule " +
-			"ids, so rate-limit counters survive.",
+		Short: "Change the stored order of a ruleset's rules",
+		Long: "Changes the stored order, the order `rules list` shows. Within a ruleset, rules can run " +
+			"in a different order: every block rule runs before every challenge rule, and among rules " +
+			"with the same action a lower priority runs first (a rule that sets none counts as 100). " +
+			"Stored order decides only between rules with the same action and priority, so moving a rule " +
+			"changes what runs first only among those. The first rule to block or challenge decides. " +
+			"Move one rule with --move and one destination, or give every rule id in the new order. " +
+			"Reordering keeps rule ids, so rate-limit counters survive.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireRuleset(ruleset); err != nil {
 				return err
